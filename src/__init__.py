@@ -1,0 +1,1 @@
+"""Bachelor machine-vision application."""

@@ -1,0 +1,17 @@
+services:
+  bachelor:
+    image: bachelor-project:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    init: true
+    working_dir: /app
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./tests:/app/tests
+    command: ["--help"]
