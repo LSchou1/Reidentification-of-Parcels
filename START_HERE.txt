@@ -1,0 +1,84 @@
+BACHELOR DETECTION - QUICK GUIDE
+
+1. OPEN TERMINAL AND ENTER THE PROJECT
+
+cd "/Users/lasseschou/Desktop/RobTek/Bachelor/bachelor-detection"
+
+2. CHOOSE BATCHES AND CLASSES IN workflow.yaml
+
+For both annotated batches and all three classes, use:
+
+batches: [next_batch, real_photos]
+classes: [barcode, label, parcel]
+
+Leave {batch} in the four path settings. The code fills it in automatically.
+Several selected batches run separately, each with its own report and model.
+
+Use batches: [next_batch] to run only the 100-picture batch.
+real_photos contains 23 pictures, now reviewed for all three classes too.
+
+3. RUN PRETRAINED DETECTION AND HTML ANALYSIS
+
+.venv/bin/python workflow.py inspect --confidence 0.05
+
+This finds the selected classes and compares predictions with your annotations.
+It does not train the models or read barcode contents. The low confidence is
+for inspection; it does not change the future validation settings.
+
+Open the current batch's report:
+
+open data/output/next_batch/inference/index.html
+open data/output/real_photos/inference/index.html
+
+For another batch, replace next_batch with that batch's name in the open command.
+The HTML includes pictures, precision, recall, F1, IoU, confusion matrix,
+confidence curves and AP/mAP. Saved predictions are reused when possible.
+
+4. REVIEW ANNOTATIONS
+
+open tmp/next_batch/annotation_review/index.html
+
+Reference pictures and coordinates: data/annotated/next_batch/
+Edit boxes in the gallery, export the JSON and ask me to import it.
+If the gallery is missing, regenerate it for the selected batches:
+
+.venv/bin/python -m src.export_annotation_gallery
+
+5. TRAIN AND EVALUATE AFTER GROUPING IS FINISHED
+
+The 100 next_batch pictures are annotated, but their group fields are blank.
+Fill physical parcel IDs in annotations.json before splitting. Every view of
+the same parcel must stay together. A frame with parcels A and B uses A|B.
+The splitter needs at least three independent groups for train/val/test.
+The older real_photos images currently share one conservative group;
+that batch also needs enough independent groups before it can be split.
+
+Run ONE command at a time and let it finish:
+
+.venv/bin/python workflow.py split
+.venv/bin/python workflow.py baseline
+.venv/bin/python workflow.py train --dry-run
+.venv/bin/python workflow.py train
+.venv/bin/python workflow.py validate
+.venv/bin/python workflow.py test
+
+baseline = pretrained analysis on validation; train = supervised training.
+validate = trained-model analysis; test = final evaluation and comparison.
+The commands run every selected batch separately. Keep the fixed split;
+change run_name for a new experiment. Choose thresholds on validation.
+Keep test data for the final comparison.
+
+Open the result links:
+
+open data/output/next_batch/index.html
+
+OPTIONAL: READ BARCODE CONTENTS
+
+This extra command handles one batch at a time, using its own flags rather
+than workflow.yaml. It saves separately from the analysis above:
+
+.venv/bin/python -m src.detect_barcodes --input data/raw/next_batch --output data/output/next_batch/barcode_reading --with-labels --with-packages
+open data/output/next_batch/barcode_reading/index.html
+
+TRAINING ALWAYS USES CLEAN ORIGINALS FROM data/raw/.
+Pictures with drawn reference boxes are for viewing, not training.

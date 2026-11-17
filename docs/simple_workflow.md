@@ -20,8 +20,10 @@ the listed order. Each batch keeps its own annotations, fixed split, reports and
 trained model. This selection does not pool batches into one model or calculate
 combined metrics. If a batch fails, the command stops before later batches.
 Every selected batch needs reviewed annotations for every active class when
-running analysis or training. The older `real_photos` batch has no parcel
-annotations, so select only `barcode` and `label` when analysing it.
+running analysis or training. Both current batches support all three classes.
+The 23 `real_photos` images now contain 31 parcel boxes, 27 barcode boxes and
+10 shipping-label boxes. Their shared conservative group must still be resolved
+into enough independent groups before splitting for training/validation/test.
 
 ## Three data folders
 
@@ -89,8 +91,8 @@ Each filename has a record like this; boxes use original-image pixels:
 Every box is `[x1, y1, x2, y2]`: top-left and bottom-right corners. An empty class
 list means no visible objects of that class **after review**. `reviewed: false`
 means unfinished annotation and is rejected for training. A missing class field
-also means unannotated, not a negative example. This matters for the older
-`real_photos` collection, which was not annotated for parcels.
+also means unannotated, not a negative example. When adding a class to an
+existing batch, review its images before filling that class's boxes or negatives.
 
 Parcel, shipping-label and barcode boxes can overlap. Annotate every visible
 instance, including unreadable barcodes. A shipping label is the whole physical

@@ -14,7 +14,9 @@ tmp/                           Disposable caches, scratch work and retired copie
 ```
 
 The current 100-image batch is `next_batch`. The earlier 23-photo collection is
-`real_photos`. Earlier reports, retired projects and annotation history are in `tmp/archive/`.
+`real_photos`; it is now annotated for all three classes too (31 parcel boxes,
+27 barcode boxes and 10 label boxes). Earlier reports, retired projects and
+annotation history are in `tmp/archive/`.
 
 For the current batch:
 
