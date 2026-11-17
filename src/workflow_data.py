@@ -1,7 +1,8 @@
-"""Prepare photo coordinates, then make a reproducible split by physical parcel/recording.
+"""Prepare coordinates and freeze either a grouped or exploratory image split.
 
-Different parcels may look alike. Only explicit group IDs and identical pixels
-connect images here; the splitter never groups images by their appearance.
+Grouped evaluation keeps physical parcel/recording IDs together. Exploratory
+experiments allow familiar parcels across splits, while keeping identical pixels
+together. Neither mode groups different parcels by their visual appearance.
 """
 
 import csv
@@ -173,13 +174,18 @@ def group_counts(number, ratios):
     return counts
 
 
-def dataset_directory(temporary, classes):
+def dataset_directory(temporary, classes, split_mode="grouped"):
     """Each class selection has its own view; master annotations stay untouched."""
-    return Path(temporary) / "datasets" / "_".join(classes)
+    root = Path(temporary) / "datasets"
+    if split_mode == "exploratory":
+        root /= "exploratory"
+    return root / "_".join(classes)
 
 
-def split_photos(source, annotations, temporary, output, ratios, seed, classes=None):
+def split_photos(source, annotations, temporary, output, ratios, seed, classes=None, split_mode="grouped"):
     """Copy reviewed images/boxes into a new, fixed train/validation/test dataset."""
+    if split_mode not in ("grouped", "exploratory"):
+        raise ValueError("split_mode must be grouped or exploratory.")
     pool, annotated, temporary, output = (Path(p).resolve() for p in (source, annotations, temporary, output))
     folders = [pool, annotated, temporary, output]
     for index, first in enumerate(folders):
@@ -192,7 +198,7 @@ def split_photos(source, annotations, temporary, output, ratios, seed, classes=N
     classes = master_names if classes is None else classes
     if not classes or len(set(classes)) != len(classes) or not set(classes).issubset(master_names):
         raise ValueError(f"Choose unique active classes from {master_names}.")
-    destination = dataset_directory(temporary, classes)
+    destination = dataset_directory(temporary, classes, split_mode)
     preparation_path = temporary / "preparation.json"
     if not preparation_path.exists():
         # tmp/ may be deleted. Rebuild fingerprints from the permanent clean raw photos.
@@ -220,7 +226,14 @@ def split_photos(source, annotations, temporary, output, ratios, seed, classes=N
         if (annotation.get("width"), annotation.get("height")) != (record["width"], record["height"]):
             raise ValueError(f"Annotation dimensions differ from the photo: {name}.")
     rows = [{"image": r["image"], "group": coordinates[r["image"]].get("group", "")} for r in records]
-    groups = related_groups(records, rows)
+    if split_mode == "exploratory":
+        # Deliberately allow different views of the same parcel across splits.
+        # Keep identical pixels together; these are image units, NOT parcel IDs.
+        groups = related_groups(records, [{"image": r["image"], "group": r["image"]} for r in records])
+        if len(groups) < 3:
+            raise ValueError("Exploratory splitting needs at least 3 distinct images after keeping exact duplicates together.")
+    else:
+        groups = related_groups(records, rows)
     counts = group_counts(len(groups), ratios)
     # Parse all active classes before creating any generated files.
     boxes_by_image = {r["image"]: coordinate_boxes(coordinates[r["image"]], [name for name in master_names if name in classes], r["image"]) for r in records}
@@ -231,13 +244,19 @@ def split_photos(source, annotations, temporary, output, ratios, seed, classes=N
             "annotations_sha256": sha256(coordinates_path),
             "images": {r["image"]: r["sha256"] for r in records}}
     plan_path = output / "dataset_split.json"
+    if split_mode == "exploratory":
+        plan.update(split_mode=split_mode, source_groups={r["image"]: r["group"] for r in rows})
+        plan_path = output / "dataset_split_exploratory.json"
     if plan_path.exists() and json.loads(plan_path.read_text()) != plan:
         raise ValueError("Photos, annotations, grouping, ratios or seed changed after the split was frozen. Use a new batch; class toggles can reuse the existing plan.")
     if destination.exists():
-        frozen_dataset(temporary, classes)
+        frozen_dataset(temporary, classes, split_mode)
         return json.loads((destination / "split_manifest.json").read_text())["summary"]
     manifest = {"seed": seed, "requested_group_ratios": ratios, "classes": classes,
                 "images": [], "groups": counts}
+    if split_mode == "exploratory":
+        manifest.update(split_mode=split_mode, split_unit="exact_duplicate_image_group",
+                        source_groups=plan["source_groups"])
     output.mkdir(parents=True, exist_ok=True)
     temporary.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(dir=temporary, prefix="split_") as staging_parent:
@@ -290,13 +309,15 @@ def split_photos(source, annotations, temporary, output, ratios, seed, classes=N
     return manifest["summary"]
 
 
-def frozen_dataset(temporary, classes):
+def frozen_dataset(temporary, classes, split_mode="grouped"):
     """Reject edits after splitting, so model reports keep referring to the same data."""
-    data = dataset_directory(temporary, classes) / "data.yaml"
+    data = dataset_directory(temporary, classes, split_mode) / "data.yaml"
     manifest_path = data.parent / "split_manifest.json"
     if not manifest_path.is_file():
         raise ValueError("Run prepare, annotate the batch, then run split first.")
     manifest = json.loads(manifest_path.read_text())
+    if manifest.get("split_mode", "grouped") != split_mode:
+        raise ValueError("The frozen dataset belongs to a different split_mode.")
     if sha256(data) != manifest["data_sha256"] or sha256(data.parent / "groups.csv") != manifest["groups_sha256"]:
         raise ValueError("The frozen dataset configuration changed. Use a new batch.")
     dataset = check_dataset(data, required=("train", "val", "test"))

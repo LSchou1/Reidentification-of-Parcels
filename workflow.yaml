@@ -2,7 +2,7 @@
 # Choose the batch folder names to run, just like classes below.
 # Example: batches: [next_batch, batch_02]
 # Each batch runs separately, with its own reports, split and trained model.
-batches: [next_batch]
+batches: [next_batch, real_photos]
 
 # {batch} is replaced automatically with each name above. Leave it in the paths.
 input: data/raw/{batch}
@@ -18,7 +18,10 @@ classes: [barcode, label, parcel]
 # Change this name for another training experiment on the same frozen data.
 run_name: experiment_01
 
-# Ratios refer to independent groups, so actual IMAGE percentages can differ.
+# exploratory: split current images; the same parcels may appear in all sets.
+# grouped: keep physical parcel/recording groups together (needs 3+ groups).
+split_mode: exploratory
+# Ratios refer to split units; exact duplicate images always stay together.
 split: {train: 0.70, val: 0.15, test: 0.15}
 seed: 42
 

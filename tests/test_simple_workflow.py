@@ -126,6 +126,7 @@ def test_missing_annotation_cannot_be_treated_as_a_negative(batch):
 def configuration(tmp_path, project, temporary, output):
     config = yaml.safe_load(Path("workflow.yaml").read_text())
     config.pop("batches", None)  # These fixtures exercise legacy explicit paths.
+    config["split_mode"] = "grouped"
     config["annotations"] = str(project)
     config["output"] = str(output)
     config["temporary"] = str(temporary)
@@ -302,10 +303,12 @@ def test_inspection_rejects_unreviewed_and_incomplete_annotation_sets(batch):
         inspection_samples(source, project, CLASSES)
 
 
-def test_full_lifecycle_freezes_val_confidence_and_rejects_stale_comparisons(batch, tmp_path, monkeypatch):
+@pytest.mark.parametrize("split_mode", ["grouped", "exploratory"])
+def test_full_lifecycle_freezes_val_confidence_and_rejects_stale_comparisons(batch, tmp_path, monkeypatch, split_mode):
     source, project, temporary, output = batch
-    split_photos(source, project, temporary, output, RATIOS, 42, CLASSES)
+    split_photos(source, project, temporary, output, RATIOS, 42, CLASSES, split_mode)
     config = configuration(tmp_path, project, temporary, output)
+    config["split_mode"] = split_mode
     root = workflow.run_directory(config)
     seen = []
 
@@ -360,6 +363,10 @@ def test_full_lifecycle_freezes_val_confidence_and_rejects_stale_comparisons(bat
         workflow.test_models(changed)
     exported = json.loads((comparison.parent / "comparison.json").read_text())
     assert all("accuracy" not in row for row in exported["rows"])
+    if split_mode == "exploratory":
+        assert all(row["purpose"] == "exploratory_frame_split" for row in exported["rows"])
+        assert "Exploratory experiment on familiar parcels" in comparison.read_text()
+        assert "Final held-out test results" not in comparison.read_text()
 
 
 def test_deleting_tmp_rebuilds_identical_split_without_changing_json(batch):
@@ -446,3 +453,79 @@ def test_gallery_rebuilds_from_json_and_respects_phone_orientation(tmp_path):
     assert photo.read_bytes() == original
     assert (annotated / 'annotations.json').read_bytes() == coordinates
     assert sorted(p.name for p in annotated.iterdir()) == ['annotations.json', 'phone.jpg']
+
+
+@pytest.mark.parametrize('source_group', ['same_collection', ''])
+def test_exploratory_split_preserves_physical_ids_and_exact_duplicates(batch, source_group):
+    source, project, temporary, output = batch
+    path = project / 'annotations.json'
+    coordinates = json.loads(path.read_text())
+    for record in coordinates.values():
+        record['group'] = source_group
+    save_json(path, coordinates)
+    original = path.read_bytes()
+    # Metadata/filename differences must not let identical pixels cross splits.
+    shutil.copy2(source / 'physical_0/frame_0.png', source / 'physical_0/frame_1.png')
+    (temporary / 'preparation.json').unlink()
+    with pytest.raises(ValueError, match='at least 3 independent' if source_group else 'Missing group'):
+        split_photos(source, project, temporary, output, RATIOS, 42, CLASSES)
+    split_photos(source, project, temporary, output, RATIOS, 42, CLASSES, 'exploratory')
+    dataset, before_hash = frozen_dataset(temporary, CLASSES, 'exploratory')
+    assigned = {Path(*Path(s['image']).parts[2:]).as_posix(): split
+                for split, samples in dataset['splits'].items() for s in samples}
+    assert assigned['physical_0/frame_0.png'] == assigned['physical_0/frame_1.png']
+    assert set(assigned.values()) == {'train', 'val', 'test'}
+    plan = json.loads((output / 'dataset_split_exploratory.json').read_text())
+    assert set(plan['source_groups'].values()) == {source_group}
+    assert not (output / 'dataset_split.json').exists()
+    assert not dataset_directory(temporary, CLASSES).exists()
+    split_photos(source, project, temporary, output, RATIOS, 42, ['parcel'], 'exploratory')
+    filtered, _ = frozen_dataset(temporary, ['parcel'], 'exploratory')
+    assert {Path(*Path(s['image']).parts[2:]).as_posix(): split
+            for split, samples in filtered['splits'].items() for s in samples} == assigned
+    shutil.rmtree(temporary)
+    split_photos(source, project, temporary, output, RATIOS, 42, CLASSES, 'exploratory')
+    assert frozen_dataset(temporary, CLASSES, 'exploratory')[1] == before_hash
+    assert path.read_bytes() == original
+    with pytest.raises(ValueError, match='frozen'):
+        split_photos(source, project, temporary, output, RATIOS, 43, CLASSES, 'exploratory')
+
+
+def test_modes_have_separate_datasets_and_reports(batch, tmp_path, monkeypatch):
+    source, project, temporary, output = batch
+    for mode in ('grouped', 'exploratory'):
+        split_photos(source, project, temporary, output, RATIOS, 42, CLASSES, mode)
+        frozen_dataset(temporary, CLASSES, mode)
+    config = configuration(tmp_path, project, temporary, output)
+    strict_root = workflow.run_directory(config)
+    config['split_mode'] = 'exploratory'
+    assert workflow.run_directory(config) != strict_root
+
+    def predict(samples, names, config, kind, trained_weights):
+        return {'model': {'kind': kind}, 'settings': {}, 'images': [
+            {**{key: s[key] for key in ('image', 'sha256', 'width', 'height')},
+             'detections': [{**a, 'confidence': 0.8} for a in s['annotations']]}
+            for s in samples]}
+
+    monkeypatch.setattr(reports, 'predict_boxes', predict)
+    result = reports.run_analysis(config, workflow.run_directory(config), 'baseline', 'val')
+    assert result['purpose'] == 'exploratory_frame_split'
+    assert 'Exploratory experiment on familiar parcels' in (
+        workflow.run_directory(config) / 'baseline_val/index.html').read_text()
+    reports.write_output_index(config)
+    assert 'exploratory/index.html' in (output / 'index.html').read_text()
+    assert 'dataset_split_exploratory.json' in (output / 'index.html').read_text()
+    altered = deepcopy(result)
+    altered['purpose'] = 'real_data_experiment'
+    with pytest.raises(ValueError, match='different evaluation purposes'):
+        reports.compatible_results(result, altered)
+
+
+@pytest.mark.parametrize('mode', ['random', True, None])
+def test_invalid_split_mode_is_rejected(tmp_path, mode):
+    config = yaml.safe_load(Path('workflow.yaml').read_text())
+    config['split_mode'] = mode
+    path = tmp_path / 'workflow.yaml'
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError, match='split_mode'):
+        workflow.read_config(path)

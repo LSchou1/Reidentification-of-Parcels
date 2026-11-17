@@ -318,6 +318,11 @@ def write_report(result, samples, output):
         demonstration = ('<p class="notice"><strong>Indledende analyse af hele det annoterede batch.</strong> '
                          'Fortrænede modeller; ingen træning. Billederne er endnu ikke opdelt i train/val/test. '
                          'Disse tal er derfor ikke en endelig testmåling. Confidence er fast valgt til denne visning.</p>')
+    if result.get("purpose") == "exploratory_frame_split":
+        demonstration = ('<p class="notice"><strong>Exploratory experiment on familiar parcels.</strong> '
+                         'Forskellige billeder af samme pakker kan forekomme i train/val/test. '
+                         'Resultaterne måler nye billeder af kendte pakker, ikke generalisering til nye fysiske pakker. '
+                         '</p>')
     title = "Evaluering: " + ", ".join(labels[:-1])
     page = ('<!doctype html><html lang="da"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
             f'<title>{html.escape(title)}</title><style>body{{font:16px system-ui;max-width:1250px;margin:30px auto;padding:0 20px;color:#172433}}'

@@ -12,6 +12,7 @@ annotations: data/annotated/{batch}
 output: data/output/{batch}
 temporary: tmp/{batch}
 classes: [barcode, label, parcel]
+split_mode: exploratory          # Current experiment on familiar parcels
 ```
 
 Only change `batches` to select data; keep `{batch}` in the paths. All workflow
@@ -22,8 +23,9 @@ combined metrics. If a batch fails, the command stops before later batches.
 Every selected batch needs reviewed annotations for every active class when
 running analysis or training. Both current batches support all three classes.
 The 23 `real_photos` images now contain 31 parcel boxes, 27 barcode boxes and
-10 shipping-label boxes. Their shared conservative group must still be resolved
-into enough independent groups before splitting for training/validation/test.
+10 shipping-label boxes. Both current batches can run with `split_mode: exploratory`.
+Their conservative collection groups remain unchanged. Evaluation on different
+physical parcels needs the separate `grouped` mode and enough independent groups.
 
 ## Three data folders
 
@@ -38,7 +40,7 @@ data/
     index.html                    # Links to this batch's model experiments
     inference/index.html          # Whole-batch inference, metrics and pictures
     experiments/                  # One named folder per model experiment
-    dataset_split.json            # Permanent split record, needed for reproducibility
+    dataset_split_exploratory.json # Permanent split record for the current mode
 tmp/next_batch/                   # Editor, thumbnails and generated training copies
 ```
 
@@ -47,7 +49,8 @@ in `tmp/archive/`. They are not part of the active workflow.
 
 **The current 100-photo batch is already prepared and annotated.** Its final
 boxes contain 485 parcels, 123 barcodes and 31 whole shipping labels. Keep those
-boxes; the remaining step before splitting is confirming physical group IDs.
+boxes and collection group IDs. Exploratory splitting is enabled for experiments
+with these familiar parcels; no new annotation or preparation is needed.
 
 ## 1. Add a NEW batch and prepare it
 
@@ -128,7 +131,16 @@ Re-running inspection replaces that inspection report; named experiments remain
 separate. This command reads `workflow.yaml`, unlike the lower-level
 `src.detect_barcodes` command with separate flags.
 
-Fill each photo's `group` in `annotations.json`. Every view of the same physical
+Choose the experiment in `workflow.yaml`:
+
+- `split_mode: exploratory` (current setting): split images of the current parcels.
+  The same parcels and neighbouring frames may occur in all sets. Only exact
+  duplicate pixels are kept together. These results measure familiar-parcel image
+  performance and cannot establish generalisation to new physical parcels.
+- `split_mode: grouped`: keep physical parcel/recording groups apart. This mode
+  requires at least three independent groups for train/validation/test.
+
+For **grouped** evaluation, fill each photo's `group` in `annotations.json`. Every view of the same physical
 parcel must stay in the same group, including views from different recordings.
 For a frame showing two parcels, use `parcel_A|parcel_B`; the code connects both
 groups transitively. Similar-looking parcels do not automatically share identity.
@@ -139,10 +151,19 @@ Byte/pixel-identical copies are also kept together.
 .venv/bin/python workflow.py status
 ```
 
-The default ratios are 70/15/15 by independent group, with seed 42. Actual image
-percentages may differ. At least three independent groups are required, and more
-are preferable. If reused parcels connect the whole collection, collect new,
-independent parcels for validation/test; do not split neighbouring frames apart.
+The ratios are 70/15/15, with seed 42. They count physical groups in `grouped`
+mode and distinct-image groups in `exploratory` mode. Actual image percentages
+may differ when a unit contains several images. Exploratory mode needs at least
+three distinct-image groups. Grouped mode needs at least three independent
+parcel/recording groups; three is only the technical minimum, not a large test set.
+
+Exploratory mode preserves the original physical group metadata in the saved
+manifest without enforcing it across splits. It writes `dataset_split_exploratory.json`
+and uses `tmp/<batch>/datasets/exploratory/`. Its reports/checkpoints are in
+`experiments/<run_name>/<classes>/exploratory/`. Grouped mode uses separate
+paths and `dataset_split.json`; switching modes cannot reuse the other checkpoint
+or silently overwrite its split. HTML notices and CSV/JSON purpose fields identify
+exploratory results. `inspect` remains the whole-batch pretrained report in either mode.
 
 The code converts JSON boxes to YOLO `.txt` files automatically under `tmp/<batch>/`.
 It freezes image hashes, coordinates, group assignments, seed and class-specific
@@ -175,7 +196,8 @@ Dry-run checks the recipe without loading/training a model. Supervised training
 starts from the local barcode weights and adapts a joint detector to the active
 classes. Only training images update weights. Validation selects the checkpoint,
 early stopping and confidence threshold. Test data is used after those choices
-are frozen, with both systems evaluated on the same held-out images.
+are frozen, with both systems evaluated on the same held-out images. In exploratory
+mode the images are held out, while physical parcel identities may overlap training.
 
 The default maximum is 100 epochs, batch 4, patience 20, CPU and input size 1280.
 Change these in `workflow.yaml`. Change `run_name` for another experiment.

@@ -21,20 +21,25 @@ def write_output_index(config):
     links = []
     if (output / "inference/index.html").is_file():
         links.append(("Pretrained inference and annotation analysis", "inference/index.html"))
-    for run in sorted((output / "experiments").glob("*/*")):
+    runs = [*(output / "experiments").glob("*/*"), *(output / "experiments").glob("*/*/exploratory")]
+    for run in sorted(runs):
         if not run.is_dir():
             continue
         pages = [(p.parent.name.replace("_", " "), p.relative_to(run).as_posix())
-                 for p in sorted(run.glob("*/index.html"))]
+                 for p in sorted(run.glob("*/index.html")) if p.parent.name != "exploratory"]
         checkpoint = run / "training/detector/weights/best.pt"
         if checkpoint.exists():
             pages.append(("Trained model", checkpoint.relative_to(run).as_posix()))
         if pages:
             items = "".join(f'<li><a href="{html.escape(path)}">{html.escape(label)}</a></li>' for label, path in pages)
-            (run / "index.html").write_text(f'<!doctype html><meta charset="utf-8"><title>Experiment</title><h1>{html.escape(run.parent.name)} — {html.escape(run.name)}</h1><ul>{items}</ul>')
-            links.append((f"{run.parent.name}: {run.name}", (run / "index.html").relative_to(output).as_posix()))
+            title = run.relative_to(output / "experiments").as_posix()
+            notice = '<p><strong>Image-based split: different pictures of the same parcels may occur in train/val/test.</strong></p>' if run.name == "exploratory" else ''
+            (run / "index.html").write_text(f'<!doctype html><meta charset="utf-8"><title>Experiment</title><h1>{html.escape(title)}</h1>{notice}<ul>{items}</ul>')
+            links.append((title, (run / "index.html").relative_to(output).as_posix()))
     if (output / "dataset_split.json").exists():
         links.append(("Fixed dataset split", "dataset_split.json"))
+    if (output / "dataset_split_exploratory.json").exists():
+        links.append(("Fixed exploratory image split — familiar parcels", "dataset_split_exploratory.json"))
     items = "".join(f'<li><a href="{html.escape(path)}">{html.escape(label)}</a></li>' for label, path in links)
     (output / "index.html").write_text(f'<!doctype html><meta charset="utf-8"><title>Batch results</title><h1>{html.escape(output.name)} — results</h1><ul>{items}</ul><p>Temporary previews and generated training copies are stored separately in tmp/.</p>')
 
@@ -62,7 +67,7 @@ def analysis_request(config, kind, split, files, dataset_hash, validation_hash=N
     return {"kind": kind, "split": split, "classes": config["classes"],
             "dataset_manifest_sha256": dataset_hash, "weights": files,
             "settings": {key: config[key] for key in keys}, "validation_report_sha256": validation_hash,
-            "purpose": config.get("purpose", "real_data_experiment")}
+            "purpose": "exploratory_frame_split" if config.get("split_mode") == "exploratory" else config.get("purpose", "real_data_experiment")}
 
 
 def export_analysis_tables(result, output):
@@ -72,7 +77,8 @@ def export_analysis_tables(result, output):
         values = result["overall"] if name == "overall" else result["per_class"][name]
         overlap = result["iou_summary"]["overall"] if name == "overall" else result["iou_summary"]["per_class"][name]
         ap = {"ap50": result["map50"], "ap50_95": result["map50_95"]} if name == "overall" else result["average_precision"][name]
-        metric_rows.append({"class": name, "confidence": result["settings"]["confidence"],
+        metric_rows.append({"purpose": result.get("purpose", "real_data_experiment"),
+                            "class": name, "confidence": result["settings"]["confidence"],
                             **values, "mean_iou": overlap["mean"], **ap})
     for image in result["images"]:
         matches = {match["prediction_index"]: match for match in image["match_details"]}
@@ -102,8 +108,10 @@ def export_analysis_tables(result, output):
             detection_rows.append({"image": image["image"], "class": annotation["class"],
                 "status": "FN", "confidence": None, "iou": None,
                 **dict(zip(("x1", "y1", "x2", "y2"), annotation["xyxy"]))})
+    for row in detection_rows:
+        row["purpose"] = result.get("purpose", "real_data_experiment")
     tables = [("metrics.csv", metric_rows, list(metric_rows[0])),
-              ("detections.csv", detection_rows, ["image", "class", "status", "confidence", "iou", "x1", "y1", "x2", "y2"])]
+              ("detections.csv", detection_rows, ["purpose", "image", "class", "status", "confidence", "iou", "x1", "y1", "x2", "y2"])]
     for filename, rows, fields in tables:
         with (output / filename).open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
@@ -173,7 +181,8 @@ def inspect_batch(config, confidence=None):
 
 def run_analysis(config, run_root, kind, split, trained_weights=None):
     """Evaluate a model; choose on val, reuse that exact choice on test."""
-    dataset, dataset_hash = frozen_dataset(config["temporary"], config["classes"])
+    mode = config.get("split_mode", "grouped")
+    dataset, dataset_hash = frozen_dataset(config["temporary"], config["classes"], mode)
     files = model_files(config, kind, trained_weights)
     validation_hash, threshold = None, config["confidence"]
     if split == "test":
@@ -215,7 +224,7 @@ def run_analysis(config, run_root, kind, split, trained_weights=None):
         threshold, sweep = choose_confidence(samples, dataset["names"], config["prediction_floor"], config["iou"], config["confidence"])
     result = evaluate(samples, dataset["names"], threshold, config["iou"], config["prediction_floor"])
     result.update({"created_at": datetime.now(timezone.utc).isoformat(), "split": split,
-                   "purpose": config.get("purpose", "real_data_experiment"),
+                   "purpose": request["purpose"],
                    "dataset": dataset_summary(dataset), "model": predictions["model"],
                    "image_hashes": {s["image"]: s["sha256"] for s in samples},
                    "annotation_hashes": {s["image"]: sha256(label_path(s["path"])) for s in samples},
@@ -223,8 +232,9 @@ def run_analysis(config, run_root, kind, split, trained_weights=None):
                                 "threshold_source": "validation" if split == "test" else "validation selection"}})
     result["notes"][0:0] = [
         "Active classes: " + ", ".join(dataset["names"]) + ". Results are shown separately for each class.",
-        "Split groups use physical parcel/recording IDs and duplicate pixels, never visual similarity or unverified barcode content.",
-        "Validation results are used for model/threshold selection and can be optimistic. Final performance is measured on the held-out test split.",
+        ("Image-based split: different pictures of the same parcels may occur in train/val/test; exact duplicate pixels stay together."
+         if mode == "exploratory" else "Split groups use physical parcel/recording IDs and duplicate pixels, never visual similarity or unverified barcode content."),
+        "Validation results are used for model/threshold selection and can be optimistic. Test images are held out of weight updates and selection; the split design determines whether physical parcels are also held out.",
         ("Test confidence was frozen from this model's validation report; test annotations were not used to choose it."
          if split == "test" else "Confidence is selected by maximum combined F1 on validation." if config["select_confidence"] else "Confidence is fixed by workflow.yaml; no threshold search was performed."),
         "This analysis measures bounding-box detection, not barcode decoding, OCR, tracking, re-identification or verified parcel identity.",
@@ -246,6 +256,8 @@ def run_analysis(config, run_root, kind, split, trained_weights=None):
 
 def compatible_results(baseline, trained):
     """Never compare metrics from different images, annotations or matching rules."""
+    if baseline.get("purpose") != trained.get("purpose"):
+        raise ValueError("Cannot compare different evaluation purposes or split modes.")
     for key in ("split", "image_hashes", "annotation_hashes"):
         if baseline[key] != trained[key]:
             raise ValueError(f"Cannot compare models with different {key}.")
@@ -295,13 +307,14 @@ def comparison_report(run_root):
                 values = report["overall"] if name == "overall" else report["per_class"][name]
                 overlaps = report["iou_summary"]["overall"] if name == "overall" else report["iou_summary"]["per_class"][name]
                 ap = {"ap50": report["map50"], "ap50_95": report["map50_95"]} if name == "overall" else report["average_precision"][name]
-                row = {"split": split, "model": kind, "class": name, "confidence": report["settings"]["confidence"],
+                row = {"purpose": report["purpose"], "split": split, "model": kind, "class": name, "confidence": report["settings"]["confidence"],
                        **values, "mean_iou": overlaps["mean"], **ap}
                 rows.append(row)
                 cells = [html.escape(name), kind, f"{row['confidence']:.4g}", str(row['tp']), str(row['fp']), str(row['fn'])]
                 cells += ["—" if row[key] is None else f"{row[key]:.3f}" for key in ("precision", "recall", "f1", "mean_iou", "ap50", "ap50_95")]
                 table_rows.append("<tr>" + "".join(f"<td>{value}</td>" for value in cells) + "</tr>")
-        heading = "Final held-out test results" if split == "test" else "Validation results used for selection"
+        exploratory = pair["baseline"].get("purpose") == "exploratory_frame_split"
+        heading = ("Exploratory test images — familiar parcels" if exploratory else "Final held-out test results") if split == "test" else "Validation results used for selection"
         sections.append(f"<h2>{heading}</h2><div class='scroll'><table><tr>" + "".join(
             f"<th>{label}</th>" for label in ("Class", "Model", "Conf", "TP", "FP", "FN", "Precision", "Recall", "F1", "Mean IoU", "AP50 / mAP50", "AP50–95 / mAP50–95")) + "</tr>" + "".join(table_rows) + "</table></div>" +
             f"<p><a href='../baseline_{split}/index.html'>Baseline details</a> · <a href='../finetuned_{split}/index.html'>Fine-tuned details</a></p>" +
@@ -314,6 +327,8 @@ def comparison_report(run_root):
 """ + "".join(sections)
     if all(r.get("purpose") == "synthetic_functional_test_only" for pair in results.values() for r in pair.values()):
         page = page.replace("<h1>Pretrained vs fine-tuned detector</h1>", "<h1>Pretrained vs fine-tuned detector</h1><p><strong>Synthetic functional check only. These numbers do not establish performance on real parcels.</strong></p>")
+    if results["test"]["baseline"].get("purpose") == "exploratory_frame_split":
+        page = page.replace("<h1>Pretrained vs fine-tuned detector</h1>", "<h1>Pretrained vs fine-tuned detector</h1><p style='padding:16px;background:#fff4d6'><strong>Exploratory experiment on familiar parcels.</strong> Different pictures of the same parcels may occur in train/val/test. Scores describe new images, without requiring new parcel identities.</p>")
     training_plot = run_root / "training/detector/results.png"
     if training_plot.is_file():
         page += "<h2>Training and validation curves</h2><img alt='Training curves' src='../training/detector/results.png'>"

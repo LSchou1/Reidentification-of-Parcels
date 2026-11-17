@@ -58,6 +58,9 @@ def read_config(path):
         raise ValueError("select_confidence must be true or false.")
     if type(config["seed"]) is not int or type(config["imgsz"]) is not int or config["imgsz"] < 32:
         raise ValueError("Use an integer seed and an integer imgsz of at least 32.")
+    config.setdefault("split_mode", "grouped")  # Older configs keep their strict split.
+    if config["split_mode"] not in ("grouped", "exploratory"):
+        raise ValueError("split_mode must be grouped or exploratory.")
     group_counts(3, config["split"])
     return config
 
@@ -84,16 +87,18 @@ def batch_configs(config):
 
 def run_directory(config):
     # Class toggles get their own results, without losing an earlier experiment.
-    return Path(config["output"]) / "experiments" / config["run_name"] / "_".join(config["classes"])
+    root = Path(config["output"]) / "experiments" / config["run_name"] / "_".join(config["classes"])
+    return root / "exploratory" if config.get("split_mode") == "exploratory" else root
 
 
 def training_request(config):
     """Bind a checkpoint to the exact dataset, starting weights and settings."""
-    _, dataset_hash = frozen_dataset(config["temporary"], config["classes"])
+    _, dataset_hash = frozen_dataset(config["temporary"], config["classes"], config.get("split_mode", "grouped"))
     weights = Path(config["barcode_weights"])
     if not weights.is_file():
         raise ValueError(f"Missing training starting weights: {weights}")
     return {"dataset_manifest_sha256": dataset_hash, "classes": config["classes"],
+            "split_mode": config.get("split_mode", "grouped"),
             "starting_weights_sha256": sha256(weights), "training": config["training"],
             "seed": config["seed"], "device": config["device"], "imgsz": config["imgsz"]}
 
@@ -123,7 +128,7 @@ def train(config, dry_run=False):
         if baseline["workflow"]["request"] != expected:
             raise ValueError("Baseline settings changed. Choose a new run_name and run baseline again.")
     args = argparse.Namespace(
-        data=dataset_directory(config["temporary"], config["classes"]) / "data.yaml",
+        data=dataset_directory(config["temporary"], config["classes"], config.get("split_mode", "grouped")) / "data.yaml",
         weights=Path(config["barcode_weights"]), output=root / "training",
         epochs=config["training"]["epochs"], batch=config["training"]["batch"],
         patience=config["training"]["patience"], imgsz=config["imgsz"],
@@ -139,7 +144,7 @@ def test_models(config):
     """Check BOTH validation selections before either model sees the test set."""
     root = run_directory(config)
     weights = require_trained_model(config)
-    _, dataset_hash = frozen_dataset(config["temporary"], config["classes"])
+    _, dataset_hash = frozen_dataset(config["temporary"], config["classes"], config.get("split_mode", "grouped"))
     for kind in ("baseline", "finetuned"):
         path = root / f"{kind}_val/evaluation.json"
         if not path.is_file():
@@ -158,7 +163,7 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in [
         ("prepare", "Prepare coordinate JSON; then ask the assistant to annotate."),
-        ("split", "Make/freeze grouped train, validation and test data."),
+        ("split", "Make/freeze train, validation and test data using split_mode."),
         ("baseline", "Pretrained inference and analysis on validation."),
         ("validate", "Fine-tuned inference and analysis on validation."),
         ("test", "Final test of both models, plus comparison report."),
@@ -176,17 +181,19 @@ def main(argv=None):
         for config in batch_configs(read_config(args.config)):
             if "batch" in config:
                 print(f"Batch: {config['batch']}", flush=True)
+            if config["split_mode"] == "exploratory" and args.command not in {"prepare", "inspect"}:
+                print("Image-based split: different pictures of the same parcels are allowed; exact duplicates stay together.", flush=True)
             root = run_directory(config)
             if args.command in {"baseline", "train", "validate", "test", "compare"}:
                 # Deleting tmp is safe: rebuild the same frozen view before using it.
-                if not (dataset_directory(config["temporary"], config["classes"]) / "data.yaml").exists():
-                    split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"])
+                if not (dataset_directory(config["temporary"], config["classes"], config.get("split_mode", "grouped")) / "data.yaml").exists():
+                    split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"], config["split_mode"])
             if args.command == "prepare":
                 result = prepare_photos(config["input"], config["annotations"], config["temporary"], MASTER_CLASSES)
                 print(json.dumps(result, indent=2))
-                print("Next: fill annotations.json with reviewed boxes and physical group IDs, then run split.")
+                print("Next: finish and review annotations.json, then run split. Physical group IDs are only required in grouped mode.")
             elif args.command == "split":
-                print(json.dumps(split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"]), indent=2))
+                print(json.dumps(split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"], config["split_mode"]), indent=2))
             elif args.command == "baseline":
                 run_analysis(config, root, "baseline", "val")
             elif args.command == "inspect":
@@ -198,13 +205,13 @@ def main(argv=None):
             elif args.command == "test":
                 print(f"Comparison: {test_models(config)}")
             elif args.command == "compare":
-                frozen_dataset(config["temporary"], config["classes"])
+                frozen_dataset(config["temporary"], config["classes"], config.get("split_mode", "grouped"))
                 print(f"Comparison: {comparison_report(root)}")
             else:
                 print(f"Active classes: {', '.join(config['classes'])}")
                 print(f"Raw photos: {config['input']}\nAnnotations: {config['annotations']}\nResults: {root}")
-                if (dataset_directory(config["temporary"], config["classes"]) / "data.yaml").is_file():
-                    dataset, _ = frozen_dataset(config["temporary"], config["classes"])
+                if (dataset_directory(config["temporary"], config["classes"], config.get("split_mode", "grouped")) / "data.yaml").is_file():
+                    dataset, _ = frozen_dataset(config["temporary"], config["classes"], config.get("split_mode", "grouped"))
                     print(json.dumps(dataset_summary(dataset), indent=2))
                 else:
                     print("No frozen dataset for this selection yet. Start with prepare, annotation, then split.")

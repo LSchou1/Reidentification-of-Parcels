@@ -61,7 +61,7 @@ already completed batch results remain saved.
 # NEW batches only: copy raw photos, then ask the assistant to annotate them.
 .venv/bin/python workflow.py prepare
 
-# After annotation: fill physical group IDs in annotations.json before splitting.
+# After annotation: split images (parcel IDs are only required in grouped mode).
 .venv/bin/python workflow.py split
 .venv/bin/python workflow.py baseline
 .venv/bin/python workflow.py train --dry-run
@@ -78,8 +78,15 @@ This is exploratory inference on the whole batch, not a held-out test. It uses
 validation threshold. Predictions are cached, so a new inspection confidence
 can be analysed without running the models again. The 0.05 value is a low
 inspection threshold, not a recommendation for the final model.
-For training, start with grouping, then `split`; do not run `prepare` again.
+For training, run `split`; do not run `prepare` again. The current configuration
+uses `split_mode: exploratory`, so you can experiment with the current images.
+The same parcels and neighbouring frames may occur in train/val/test. Exact
+duplicate pixels stay together. Reports identify this as performance on familiar
+parcels, not generalisation to new physical parcels. Your group IDs stay intact.
+The split is fixed and reused across training runs; change `run_name` for a new
+experiment. Exploratory checkpoints and reports use a separate `exploratory/` folder.
 
+For later evaluation on new physical parcels, set `split_mode: grouped`.
 Keep every view of the same physical parcel in one group, including appearances
 in different recordings. Use `parcel_A|parcel_B` when a frame shows both. At least
 three independent groups are needed for train/validation/test. If these frames
