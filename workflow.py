@@ -42,11 +42,12 @@ def read_config(path):
         raise ValueError("run_name may contain letters, numbers, underscores and hyphens.")
     for key in ("input", "annotations", "output", "temporary", "barcode_weights", "world_weights"):
         config[key] = str((path.parent / config[key]).resolve())
-    folders = [Path(config[key]) for key in ("input", "annotations", "output", "temporary")]
-    for index, first in enumerate(folders):
-        for second in folders[index + 1:]:
-            if first == second or first.is_relative_to(second) or second.is_relative_to(first):
-                raise ValueError("Keep input, annotations, output and temporary files separate.")
+    for selected in batch_configs(config):
+        folders = [Path(selected[key]) for key in ("input", "annotations", "output", "temporary")]
+        for index, first in enumerate(folders):
+            for second in folders[index + 1:]:
+                if first == second or first.is_relative_to(second) or second.is_relative_to(first):
+                    raise ValueError("Keep input, annotations, output and temporary files separate.")
     for key in ("prediction_floor", "nms_iou", "iou", "confidence"):
         value = config[key]
         if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= 1:
@@ -59,6 +60,26 @@ def read_config(path):
         raise ValueError("Use an integer seed and an integer imgsz of at least 32.")
     group_counts(3, config["split"])
     return config
+
+
+def batch_configs(config):
+    """Make one ordinary configuration per batch; never mix their datasets."""
+    paths = ("input", "annotations", "output", "temporary")
+    if "batches" not in config:
+        # Older configs with four explicit batch paths still work.
+        if any("{batch}" in config[key] for key in paths):
+            raise ValueError("Set batches: [your_batch] when using {batch} in paths.")
+        return [config]
+    batches = config["batches"]
+    if (not isinstance(batches, list) or not batches
+            or any(not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in batches)
+            or len(set(batches)) != len(batches)):
+        raise ValueError("batches must be a non-empty list of unique folder names using letters, numbers, underscores or hyphens.")
+    if any("{batch}" not in config[key] for key in paths):
+        raise ValueError("With batches, keep {batch} in input, annotations, output and temporary paths.")
+    return [{**config, "batch": name,
+             **{key: str(Path(config[key].replace("{batch}", name)).resolve()) for key in paths}}
+            for name in batches]
 
 
 def run_directory(config):
@@ -151,40 +172,43 @@ def main(argv=None):
     training.add_argument("--dry-run", action="store_true", help="Check the training recipe without loading/training a model.")
     args = parser.parse_args(argv)
     try:
-        config = read_config(args.config)
-        root = run_directory(config)
-        if args.command in {"baseline", "train", "validate", "test", "compare"}:
-            # Deleting tmp is safe: rebuild the same frozen view before using it.
-            if not (dataset_directory(config["temporary"], config["classes"]) / "data.yaml").exists():
-                split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"])
-        if args.command == "prepare":
-            result = prepare_photos(config["input"], config["annotations"], config["temporary"], MASTER_CLASSES)
-            print(json.dumps(result, indent=2))
-            print("Next: fill annotations.json with reviewed boxes and physical group IDs, then run split.")
-        elif args.command == "split":
-            print(json.dumps(split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"]), indent=2))
-        elif args.command == "baseline":
-            run_analysis(config, root, "baseline", "val")
-        elif args.command == "inspect":
-            inspect_batch(config, args.confidence)
-        elif args.command == "train":
-            train(config, args.dry_run)
-        elif args.command == "validate":
-            run_analysis(config, root, "finetuned", "val", require_trained_model(config))
-        elif args.command == "test":
-            print(f"Comparison: {test_models(config)}")
-        elif args.command == "compare":
-            frozen_dataset(config["temporary"], config["classes"])
-            print(f"Comparison: {comparison_report(root)}")
-        else:
-            print(f"Active classes: {', '.join(config['classes'])}")
-            print(f"Raw photos: {config['input']}\nAnnotations: {config['annotations']}\nResults: {root}")
-            if (dataset_directory(config["temporary"], config["classes"]) / "data.yaml").is_file():
-                dataset, _ = frozen_dataset(config["temporary"], config["classes"])
-                print(json.dumps(dataset_summary(dataset), indent=2))
+        # The same command runs once per selected batch, in the listed order.
+        for config in batch_configs(read_config(args.config)):
+            if "batch" in config:
+                print(f"Batch: {config['batch']}", flush=True)
+            root = run_directory(config)
+            if args.command in {"baseline", "train", "validate", "test", "compare"}:
+                # Deleting tmp is safe: rebuild the same frozen view before using it.
+                if not (dataset_directory(config["temporary"], config["classes"]) / "data.yaml").exists():
+                    split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"])
+            if args.command == "prepare":
+                result = prepare_photos(config["input"], config["annotations"], config["temporary"], MASTER_CLASSES)
+                print(json.dumps(result, indent=2))
+                print("Next: fill annotations.json with reviewed boxes and physical group IDs, then run split.")
+            elif args.command == "split":
+                print(json.dumps(split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"]), indent=2))
+            elif args.command == "baseline":
+                run_analysis(config, root, "baseline", "val")
+            elif args.command == "inspect":
+                inspect_batch(config, args.confidence)
+            elif args.command == "train":
+                train(config, args.dry_run)
+            elif args.command == "validate":
+                run_analysis(config, root, "finetuned", "val", require_trained_model(config))
+            elif args.command == "test":
+                print(f"Comparison: {test_models(config)}")
+            elif args.command == "compare":
+                frozen_dataset(config["temporary"], config["classes"])
+                print(f"Comparison: {comparison_report(root)}")
             else:
-                print("No frozen dataset for this selection yet. Start with prepare, annotation, then split.")
-        write_output_index(config)
+                print(f"Active classes: {', '.join(config['classes'])}")
+                print(f"Raw photos: {config['input']}\nAnnotations: {config['annotations']}\nResults: {root}")
+                if (dataset_directory(config["temporary"], config["classes"]) / "data.yaml").is_file():
+                    dataset, _ = frozen_dataset(config["temporary"], config["classes"])
+                    print(json.dumps(dataset_summary(dataset), indent=2))
+                else:
+                    print("No frozen dataset for this selection yet. Start with prepare, annotation, then split.")
+            write_output_index(config)
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
         parser.exit(1, f"Error: {error}\nSee docs/simple_workflow.md for the next steps.\n")
     return 0

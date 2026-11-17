@@ -1,8 +1,14 @@
 # Start here. Paths are relative to THIS configuration file.
-input: data/raw/next_batch
-annotations: data/annotated/next_batch
-output: data/output/next_batch
-temporary: tmp/next_batch
+# Choose the batch folder names to run, just like classes below.
+# Example: batches: [next_batch, batch_02]
+# Each batch runs separately, with its own reports, split and trained model.
+batches: [next_batch]
+
+# {batch} is replaced automatically with each name above. Leave it in the paths.
+input: data/raw/{batch}
+annotations: data/annotated/{batch}
+output: data/output/{batch}
+temporary: tmp/{batch}
 
 # Enable any non-empty subset. Remove a name to stop training/evaluating it.
 # Master annotation IDs stay fixed: 0=barcode, 1=label, 2=parcel.

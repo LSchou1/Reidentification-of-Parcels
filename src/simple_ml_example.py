@@ -60,11 +60,18 @@ class ParcelDetector:
 
     def detectImage(self, filepath):
         import cv2
+        from workflow import batch_configs
 
+        settings = batch_configs(self.settings)
+        if len(settings) > 1:
+            # Et enkelt billede gemmes under det batch, som råbilledet tilhører.
+            settings = [s for s in settings if Path(filepath).resolve().is_relative_to(Path(s["input"]))]
+            if len(settings) != 1:
+                raise ValueError("For a single-image preview, choose a photo inside one selected raw batch.")
         image = self.loadImage(filepath)
         boxes = self.findObjects(filepath, image)
         result = self.drawBoxes(image, boxes)
-        output = Path(self.settings["output"]) / "example" / f"{Path(filepath).stem}.jpg"
+        output = Path(settings[0]["output"]) / "example" / f"{Path(filepath).stem}.jpg"
         output.parent.mkdir(parents=True, exist_ok=True)
         if not cv2.imwrite(str(output), result):
             raise ValueError(f"Cannot save image: {output}")

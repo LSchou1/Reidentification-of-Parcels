@@ -34,8 +34,20 @@ The code generates YOLO `.txt` files under `tmp/<batch>/` when splitting.
 ## Run the workflow
 
 Run commands from this `bachelor-detection` folder with its existing `.venv`.
-Change paths, active classes and training settings in [`workflow.yaml`](workflow.yaml).
+Choose batches, active classes and training settings in [`workflow.yaml`](workflow.yaml).
 See [the workflow guide](docs/simple_workflow.md) for grouping and evaluation.
+
+```yaml
+batches: [next_batch]              # Folder names inside data/raw/
+classes: [barcode, label, parcel]
+```
+
+For several batches, use e.g. `batches: [next_batch, batch_02]`. Leave `{batch}`
+in the four path settings; the code fills it in for each selected batch.
+Every workflow command runs the selected batches in order, with separate reports,
+splits and trained models. Batches are not combined into one training dataset.
+The annotation-gallery command uses the same selection. An error stops the command;
+already completed batch results remain saved.
 
 ```sh
 # Show the current paths and dataset status.

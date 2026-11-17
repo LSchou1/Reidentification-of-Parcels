@@ -3,6 +3,26 @@
 Run commands from `bachelor-detection` with its `.venv`. Settings are in
 `workflow.yaml`; paths are relative to that file. Reports open as local HTML.
 
+Select the batch folder names and object classes in that file:
+
+```yaml
+batches: [next_batch]             # Or [next_batch, batch_02]
+input: data/raw/{batch}
+annotations: data/annotated/{batch}
+output: data/output/{batch}
+temporary: tmp/{batch}
+classes: [barcode, label, parcel]
+```
+
+Only change `batches` to select data; keep `{batch}` in the paths. All workflow
+commands and annotation-gallery export run each selected batch separately, in
+the listed order. Each batch keeps its own annotations, fixed split, reports and
+trained model. This selection does not pool batches into one model or calculate
+combined metrics. If a batch fails, the command stops before later batches.
+Every selected batch needs reviewed annotations for every active class when
+running analysis or training. The older `real_photos` batch has no parcel
+annotations, so select only `barcode` and `label` when analysing it.
+
 ## Three data folders
 
 ```text
@@ -30,14 +50,14 @@ boxes; the remaining step before splitting is confirming physical group IDs.
 ## 1. Add a NEW batch and prepare it
 
 Put original photos in `data/raw/<batch-name>/`. Subfolders can identify physical
-parcels or recordings. Set `input`, `annotations`, `output` and `temporary` in `workflow.yaml`
-to matching batch folders, then run:
+parcels or recordings. Set `batches: [<batch-name>]` in `workflow.yaml`, then run:
 
 ```sh
 .venv/bin/python workflow.py prepare
 ```
 
 This creates one `annotations.json`, keyed by paths relative to the raw folder.
+When preparing several new batches, list only those new batches in `batches`.
 Different parcel subfolders may therefore both contain `view_01.jpg`. The
 annotation gallery renders boxed previews into the annotated folder, using
 subfolder prefixes in preview filenames to avoid collisions.

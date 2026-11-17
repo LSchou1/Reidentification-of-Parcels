@@ -8,7 +8,7 @@ import html
 import hashlib
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageOps
-from workflow import read_config
+from workflow import batch_configs, read_config
 from src.barcode_dataset import EXTENSIONS
 from src.workflow_reports import write_output_index
 
@@ -31,10 +31,8 @@ def draw_review(image_path, annotation, thumb_path, marked_path):
     image.save(thumb_path, quality=88)
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=CODE_ROOT / "workflow.yaml")
-    settings = read_config(parser.parse_args(argv).config)
+def export_gallery(settings):
+    """Render one batch; main calls this once for each selected batch."""
     ROOT = Path(settings["annotations"])
     IMAGE_DIR = Path(settings["input"])
     REVIEW_DIR = Path(settings["temporary"]) / "annotation_review"
@@ -141,6 +139,16 @@ button[aria-pressed="true"]{background:#23618d;border-color:#8ed1ff}
     (REVIEW_DIR / "index.html").write_text(page)
     write_output_index(settings)
     print(f"Exported {len(files)} images; boxes: {counts}; COCO objects: {len(coco['annotations'])}")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=CODE_ROOT / "workflow.yaml")
+    for settings in batch_configs(read_config(parser.parse_args(argv).config)):
+        if "batch" in settings:
+            print(f"Batch: {settings['batch']}")
+        export_gallery(settings)
+
 
 if __name__ == "__main__":
     main()

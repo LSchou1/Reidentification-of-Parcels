@@ -125,6 +125,7 @@ def test_missing_annotation_cannot_be_treated_as_a_negative(batch):
 
 def configuration(tmp_path, project, temporary, output):
     config = yaml.safe_load(Path("workflow.yaml").read_text())
+    config.pop("batches", None)  # These fixtures exercise legacy explicit paths.
     config["annotations"] = str(project)
     config["output"] = str(output)
     config["temporary"] = str(temporary)
@@ -133,6 +134,96 @@ def configuration(tmp_path, project, temporary, output):
         weights.write_bytes(key.encode())
         config[key] = str(weights)
     return config
+
+
+def test_batch_selection_routes_same_named_images_and_reports_separately(tmp_path, monkeypatch):
+    config = yaml.safe_load(Path("workflow.yaml").read_text())
+    config["batches"] = ["delivery_A", "delivery_B"]
+    for name in [*config["batches"], "not_selected"]:
+        photo = tmp_path / "data/raw" / name / "photo.png"
+        photo.parent.mkdir(parents=True)
+        cv2.imwrite(str(photo), np.full((80, 100, 3), 50 + len(name), np.uint8))
+    for key in ("barcode_weights", "world_weights"):
+        weights = tmp_path / config[key]
+        weights.parent.mkdir(exist_ok=True)
+        weights.write_bytes(key.encode())
+    config_path = tmp_path / "workflow.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    selected = workflow.batch_configs(workflow.read_config(config_path))
+    assert [c["batch"] for c in selected] == config["batches"]
+    assert [Path(c["output"]) for c in selected] == [tmp_path / "data/output" / name for name in config["batches"]]
+    assert workflow.main(["--config", str(config_path), "prepare"]) == 0
+    for name in config["batches"]:
+        path = tmp_path / "data/annotated" / name / "annotations.json"
+        coordinates = json.loads(path.read_text())
+        coordinates["photo.png"].update(reviewed=True, parcel=[[0, 0, 100, 80]])
+        if name == "delivery_A":
+            coordinates["photo.png"]["barcode"] = [[10, 10, 30, 20]]
+        save_json(path, coordinates)
+    assert not (tmp_path / "data/annotated/not_selected").exists()
+    calls = []
+
+    def predict(samples, names, settings, kind):
+        calls.append(settings["batch"])
+        assert len(samples) == 1 and samples[0]["path"].parent.name == settings["batch"]
+        return {"model": {"kind": kind}, "settings": {}, "images": [
+            {**{key: s[key] for key in ("image", "sha256", "width", "height")},
+             "detections": [{**a, "confidence": 0.9} for a in s["annotations"]]} for s in samples]}
+
+    monkeypatch.setattr(reports, "predict_boxes", predict)
+    assert workflow.main(["--config", str(config_path), "inspect", "--confidence", "0.05"]) == 0
+    assert calls == config["batches"]
+    for name, expected in [("delivery_A", 1), ("delivery_B", 0)]:
+        output = tmp_path / "data/output" / name
+        report = json.loads((output / "inference/evaluation.json").read_text())
+        assert report["per_class"]["barcode"]["tp"] == expected
+        assert report["per_class"]["parcel"]["tp"] == 1
+        assert len(report["images"]) == 1
+        assert (output / "inference/index.html").is_file()
+        assert (output / "index.html").is_file()
+    from src.export_annotation_gallery import main as gallery
+    gallery(["--config", str(config_path)])
+    for name in config["batches"]:
+        assert (tmp_path / "data/annotated" / name / "photo.jpg").is_file()
+        assert (tmp_path / "tmp" / name / "annotation_review/index.html").is_file()
+
+
+def test_single_image_example_saves_under_the_matching_selected_batch(tmp_path, monkeypatch):
+    from src.simple_ml_example import ParcelDetector
+
+    config = yaml.safe_load(Path("workflow.yaml").read_text())
+    config["batches"] = ["delivery_A", "delivery_B"]
+    path = tmp_path / "workflow.yaml"
+    path.write_text(yaml.safe_dump(config))
+    photo = tmp_path / "data/raw/delivery_B/photo.png"
+    photo.parent.mkdir(parents=True)
+    cv2.imwrite(str(photo), np.full((20, 30, 3), 100, np.uint8))
+    detector = ParcelDetector(path)
+    monkeypatch.setattr(detector, "findObjects", lambda filepath, pixels: [])
+    assert detector.detectImage(photo) == []
+    assert (tmp_path / "data/output/delivery_B/example/photo.jpg").is_file()
+    assert not (tmp_path / "data/output/delivery_A").exists()
+    with pytest.raises(ValueError, match="inside one selected raw batch"):
+        detector.detectImage(tmp_path / "outside.png")
+
+
+@pytest.mark.parametrize("names", [[], "next_batch", ["same", "same"], ["../other"], ["a/b"], [None], [["nested"]]])
+def test_invalid_batch_selection_is_rejected(tmp_path, names):
+    config = yaml.safe_load(Path("workflow.yaml").read_text())
+    config["batches"] = names
+    path = tmp_path / "workflow.yaml"
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError, match="batches must"):
+        workflow.read_config(path)
+
+
+def test_batches_require_separate_template_paths(tmp_path):
+    config = yaml.safe_load(Path("workflow.yaml").read_text())
+    config["output"] = "data/output/shared"
+    path = tmp_path / "workflow.yaml"
+    path.write_text(yaml.safe_dump(config))
+    with pytest.raises(ValueError, match="keep.*batch"):
+        workflow.read_config(path)
 
 
 def test_choose_confidence_uses_all_scores_and_can_keep_a_simple_tied_value():
@@ -339,6 +430,7 @@ def test_gallery_rebuilds_from_json_and_respects_phone_orientation(tmp_path):
               'barcode': [[10, 10, 40, 30]], 'label': [], 'parcel': [[0, 0, 100, 80]]}
     save_json(annotated / 'annotations.json', {'phone.jpg': record})
     config = yaml.safe_load(Path('workflow.yaml').read_text())
+    config.pop('batches', None)
     config.update(input=str(raw), annotations=str(annotated), temporary=str(temporary),
                   output=str(tmp_path / 'output'))
     config_path = tmp_path / 'workflow.yaml'

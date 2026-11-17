@@ -37,8 +37,11 @@ detector = ParcelDetector()
 boxes = detector.detectImage("data/raw/next_batch/your_photo.png")
 ```
 
-Change classes, model paths, confidence, network input size and training settings
+Change batches, classes, model paths, confidence, network input size and training settings
 in **one place: `workflow.yaml`**. Clean source images keep their original size.
+`batches: [next_batch, batch_02]` runs the workflow steps separately for those
+two batches. The single-image preview saves under the batch containing that
+photo; with multiple selected batches, choose a photo in one of their raw folders.
 
 After annotation and physical group IDs in `data/annotated/next_batch/annotations.json`, the
 supervised experiment is still an explicit sequence:
