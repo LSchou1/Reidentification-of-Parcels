@@ -1,9 +1,10 @@
 services:
   bachelor:
-    image: bachelor-project:local
+    image: barcode-detection:local
     build:
       context: .
       dockerfile: Dockerfile
+      target: base
       args:
         APP_UID: ${APP_UID:-1000}
         APP_GID: ${APP_GID:-1000}
@@ -13,5 +14,30 @@ services:
       - ./src:/app/src
       - ./data:/app/data
       - ./models:/app/models
+      - ./models/clip:/app/weights/clip
       - ./tests:/app/tests
+      - ./config:/app/config:ro
     command: ["--help"]
+
+  notebook:
+    profiles: ["notebook"]
+    image: barcode-detection-notebook:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: notebook
+      args:
+        APP_UID: ${APP_UID:-1000}
+        APP_GID: ${APP_GID:-1000}
+    init: true
+    working_dir: /app
+    ports:
+      - "127.0.0.1:8888:8888"
+    volumes:
+      - ./package_detection.ipynb:/app/package_detection.ipynb
+      - ./barcode_detection.ipynb:/app/barcode_detection.ipynb
+      - ./src:/app/src
+      - ./data:/app/data
+      - ./models:/app/models
+      - ./models/clip:/app/weights/clip
+      - ./config:/app/config:ro

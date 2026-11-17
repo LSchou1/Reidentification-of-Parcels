@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.ipynb_checkpoints/
 .coverage
 htmlcov/
 
@@ -12,14 +13,16 @@ venv/
 .vscode/
 .DS_Store
 
-data/images/*
-!data/images/.gitkeep
-data/videos/*
-!data/videos/.gitkeep
-data/pointclouds/*
-!data/pointclouds/.gitkeep
-data/output/*
-!data/output/.gitkeep
+# Private photos, annotations, model outputs and local recovery archives.
+/data/raw/*
+!/data/raw/.gitkeep
+/data/annotated/*
+!/data/annotated/.gitkeep
+/data/output/*
+!/data/output/.gitkeep
 
 models/*
 !models/.gitkeep
+
+# Local alias for the existing text-encoder cache.
+/weights/

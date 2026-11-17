@@ -1,0 +1,8 @@
+{
+  "repository": "Piero2411/YOLOV8s-Barcode-Detection",
+  "revision": "59098fa84b8258fdffdc632e36482dcbf78fc5f4",
+  "file": "YOLOV8s_Barcode_Detection.pt",
+  "sha256": "316ded312281da5d4de06c36c66fdc682bd1c2052689008237baf22eb8e4f5ed",
+  "license": "AGPL-3.0",
+  "source": "https://huggingface.co/Piero2411/YOLOV8s-Barcode-Detection"
+}

@@ -18,7 +18,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--input",
         type=Path,
         required=True,
-        help="Path to the source image, for example data/images/input.jpg.",
+        help="Path to the source image, for example data/raw/next_batch/input.jpg.",
     )
     parser.add_argument(
         "--output",

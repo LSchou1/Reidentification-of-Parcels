@@ -1,0 +1,33 @@
+# Start here. Paths are relative to THIS configuration file.
+input: data/raw/next_batch
+annotations: data/annotated/next_batch
+output: data/output/next_batch
+
+# Enable any non-empty subset. Remove a name to stop training/evaluating it.
+# Master annotation IDs stay fixed: 0=barcode, 1=label, 2=parcel.
+# The split command filters/remaps IDs into a separate view automatically.
+classes: [barcode, label, parcel]
+
+# Change this name for another training experiment on the same frozen data.
+run_name: experiment_01
+
+# Ratios refer to independent groups, so actual IMAGE percentages can differ.
+split: {train: 0.70, val: 0.15, test: 0.15}
+seed: 42
+
+# Existing local pretrained weights; no model downloads happen automatically.
+barcode_weights: models/barcode_yolov8s.pt
+world_weights: models/yolov8s-worldv2.pt
+
+device: cpu                 # On supported Macs you may try mps later.
+imgsz: 1280                 # Network input size; clean originals are preserved.
+prediction_floor: 0.001     # Save weak proposals for AP and confidence curves.
+nms_iou: 0.45               # Removes duplicate predictions WITHIN a class.
+iou: 0.50                   # Matches predictions to reference boxes for scoring.
+confidence: 0.35            # Fixed value, or preferred value when it ties for best F1.
+select_confidence: true     # Choose maximum combined F1 on VAL; freeze it for TEST.
+
+training:
+  epochs: 100
+  batch: 4
+  patience: 20
