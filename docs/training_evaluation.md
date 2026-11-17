@@ -1,3 +1,5 @@
+> Advanced commands. For the simple JSON-based workflow, use [simple_workflow.md](simple_workflow.md). These low-level examples generate their own training format; they are not the annotated batch folder.
+
 # Stregkoder: inferens, egne data og supervised finjustering
 
 Kør kommandoerne fra `bachelor-detection` med `.venv/bin/python`.
@@ -33,7 +35,7 @@ verificeret pakkeidentitet. Søgning i hele billedet bevarer uafhængigheden af 
 ## 2. Egne data skal annoteres
 
 ```sh
-.venv/bin/python -m src.train_barcodes init --dataset data/output/manual_dataset --with-labels
+.venv/bin/python -m src.train_barcodes init --dataset tmp/manual_dataset --with-labels
 ```
 
 Udelad `--with-labels`, hvis datasættet kun skal bruges til stregkoder.
@@ -59,7 +61,7 @@ skabelonen først, og importér hver allerede adskilt datadel til det tilsvarend
 split. Importen opdeler ikke beslægtede frames automatisk:
 
 ```sh
-.venv/bin/python -m src.train_barcodes import-coco --annotations /sti/val_annotations.json --images /sti/rene_val_billeder --data data/output/manual_dataset/data.yaml --split val
+.venv/bin/python -m src.train_barcodes import-coco --annotations /sti/val_annotations.json --images /sti/rene_val_billeder --data tmp/manual_dataset/data.yaml --split val
 ```
 
 Hvis kategorierne hedder eksempelvis `Stregkode` og `Fragtlabel`, tilføjes
@@ -101,14 +103,14 @@ holdes samlet. Uden grupper kontrolleres kun identiske dekodede billedpixels;
 det kan ikke opdage alle næsten ens frames. Et header-only groups.csv er tomt.
 
 ```sh
-.venv/bin/python -m src.train_barcodes check --data data/output/manual_dataset/data.yaml
+.venv/bin/python -m src.train_barcodes check --data tmp/manual_dataset/data.yaml
 ```
 
 ## 3. Supervised finjustering
 
 ```sh
-.venv/bin/python -m src.train_barcodes train --data data/output/manual_dataset/data.yaml --dry-run
-.venv/bin/python -m src.train_barcodes train --data data/output/manual_dataset/data.yaml --output data/output/training/own_v1 --epochs 100 --batch 4 --device cpu
+.venv/bin/python -m src.train_barcodes train --data tmp/manual_dataset/data.yaml --dry-run
+.venv/bin/python -m src.train_barcodes train --data tmp/manual_dataset/data.yaml --output data/output/training/own_v1 --epochs 100 --batch 4 --device cpu
 ```
 
 `--dry-run` kontrollerer data og udskriver opsætningen uden at indlæse modellen,
@@ -133,8 +135,8 @@ Kør samme evaluering på baseline og finjusteret model, med samme split,
 billedstørrelse, IoU-definition og regler for valg af confidencegrænse:
 
 ```sh
-.venv/bin/python -m src.evaluate_barcodes --data data/output/manual_dataset/data.yaml --weights models/barcode_yolov8s.pt --output data/output/evaluation/baseline
-.venv/bin/python -m src.evaluate_barcodes --data data/output/manual_dataset/data.yaml --weights data/output/training/own_v1/detector/weights/best.pt --output data/output/evaluation/own_v1
+.venv/bin/python -m src.evaluate_barcodes --data tmp/manual_dataset/data.yaml --weights models/barcode_yolov8s.pt --output data/output/evaluation/baseline
+.venv/bin/python -m src.evaluate_barcodes --data tmp/manual_dataset/data.yaml --weights data/output/training/own_v1/detector/weights/best.pt --output data/output/evaluation/own_v1
 ```
 
 Denne indgang måler boksdetektion uden afkodning. En baseline uden labelklasse
@@ -143,8 +145,8 @@ den samlede baseline med YOLO-World-labels skal inferens først køres på samme
 billedsplit, og det gemte output sendes ind:
 
 ```sh
-.venv/bin/python -m src.detect_barcodes --input data/output/manual_dataset/images/val --with-labels --confidence 0.001 --label-confidence 0.001 --output data/output/baseline_val
-.venv/bin/python -m src.evaluate_barcodes --data data/output/manual_dataset/data.yaml --predictions data/output/baseline_val/barcodes.json --output data/output/evaluation/baseline_combined
+.venv/bin/python -m src.detect_barcodes --input tmp/manual_dataset/images/val --with-labels --confidence 0.001 --label-confidence 0.001 --output data/output/baseline_val
+.venv/bin/python -m src.evaluate_barcodes --data tmp/manual_dataset/data.yaml --predictions data/output/baseline_val/barcodes.json --output data/output/evaluation/baseline_combined
 ```
 
 Der skal være output for hvert referencebillede, også når modellen fandt nul

@@ -2,6 +2,7 @@
 input: data/raw/next_batch
 annotations: data/annotated/next_batch
 output: data/output/next_batch
+temporary: tmp/next_batch
 
 # Enable any non-empty subset. Remove a name to stop training/evaluating it.
 # Master annotation IDs stay fixed: 0=barcode, 1=label, 2=parcel.

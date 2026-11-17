@@ -37,8 +37,18 @@ function commit(before) {
   updatePanel(); requestPaint();
 }
 function download() {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(data,null,2)+'\n'], {type:'application/json'}));
-  const link = document.createElement('a'); link.href = url; link.download = 'annotations.manual.json'; link.click();
+  const coordinates = {};
+  for (const item of Object.values(data)) {
+    const record = {...item.record};
+    for (const [short, name] of Object.entries({b:'barcode', l:'label', p:'parcel', e:'excluded'})) {
+      // Preserve missing class annotations in older batches; do not create fake negatives.
+      if (name in record || (item.annotation[short] || []).length) record[name] = item.annotation[short] || [];
+    }
+    record.note = item.annotation.note || '';
+    coordinates[item.filename] = record;
+  }
+  const url = URL.createObjectURL(new Blob([JSON.stringify(coordinates,null,2)+'\n'], {type:'application/json'}));
+  const link = document.createElement('a'); link.href = url; link.download = 'annotations.json'; link.click();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 function setMode(next) {
@@ -227,8 +237,15 @@ $('import').onchange = async event => {
   const file = event.target.files[0]; if (!file) return;
   try {
     const imported = JSON.parse(await file.text());
-    if (keys.some(key => !imported[key]?.annotation)) throw new Error('Missing image annotation records.');
-    for (const key of keys) data[key].annotation = imported[key].annotation;
+    for (const key of keys) {
+      const item = data[key], record = imported[item.filename];
+      if (!record || record.width !== item.width || record.height !== item.height) throw new Error('Missing image record or changed dimensions.');
+    }
+    for (const key of keys) {
+      const item = data[key], record = imported[item.filename];
+      item.record = structuredClone(record);
+      item.annotation = {b:record.barcode || [], l:record.label || [], p:record.parcel || [], e:record.excluded || [], note:record.note || ''};
+    }
     selected = null; history.clear(); persist(); if (current>=0) { updatePanel(); requestPaint(); }
   } catch (error) { alert('Could not import: '+error.message); }
   event.target.value = '';

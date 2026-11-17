@@ -1,245 +1,174 @@
-# Folder-based workflow for future photo batches
+# Simple workflow: photos → annotations → inference → training → comparison
 
-Run commands from `bachelor-detection` using its `.venv`. Start by editing
-`workflow.yaml`; all its paths are relative to that configuration file.
-The entry point is `workflow.py`. Each command is a separate step you can inspect.
-No command starts a web server. The reports open directly as local HTML files.
+Run commands from `bachelor-detection` with its `.venv`. Settings are in
+`workflow.yaml`; paths are relative to that file. Reports open as local HTML.
 
-## Annotation preference — agreed with the user
-
-The user plans to ask the assistant to annotate each new batch, then correct
-boxes in the review gallery when needed. Model predictions require review before
-being used as reference annotations.
-Prepare clean copies first, then annotate those copies, keeping the originals.
-Annotate every visible instance of the classes that may be used later, create
-empty `.txt` files only for reviewed negatives, and flag uncertain boundaries.
-Keep overlay images separate from the clean model inputs. Review the difficult
-cases before a final benchmark. Quick annotation still needs consistent rules.
-
-The master YOLO annotation IDs in the annotated batch are always:
-
-| ID | Object | Bounding box |
-|---|---|---|
-| 0 | `barcode` | Visible 1D bar pattern, also unreadable or partially visible |
-| 1 | `label` | Whole physical shipping/address/tracking label |
-| 2 | `parcel` | Visible extent of each physical parcel, including partial parcels |
-
-These are separate, overlapping boxes. A parcel may contain several labels and
-barcodes, or none. Use the same visibility policy throughout the batch. Test and
-dimension stickers are not shipping labels under the current annotation policy.
-
-## 1. Add photos and make clean copies
-
-Put related photos into a folder named for their **physical parcel or recording**:
+## Three data folders
 
 ```text
-data/raw/next_batch/
-  physical_parcel_A/
-    view_01.jpeg
-    view_02.jpeg
-  physical_parcel_B/
-    view_01.jpeg
-  recording_03/
-    frame_0001.png
-    frame_0002.png
+data/
+  raw/next_batch/                  # Unchanged original photographs
+  annotated/next_batch/
+    photo_001.jpg                 # Reference boxes drawn on these pictures
+    photo_002.jpg
+    annotations.json              # The ONLY coordinate file you edit
+  output/next_batch/
+    index.html                    # Links to this batch's model experiments
+    experiments/                  # One named folder per model experiment
+    dataset_split.json            # Permanent split record, needed for reproducibility
+tmp/next_batch/                   # Editor, thumbnails and generated training copies
 ```
 
-Use the same physical-parcel ID if a parcel returns in another recording. Two
-different parcels that look alike can belong to different groups. Grouping does
-not use appearance or decoded barcode text. An unverified code is not a parcel ID.
+Earlier experiments, retired projects and annotation history are kept locally
+in `tmp/archive/`. They are not part of the active workflow.
+
+**The current 100-photo batch is already prepared and annotated.** Its final
+boxes contain 485 parcels, 123 barcodes and 31 whole shipping labels. Keep those
+boxes; the remaining step before splitting is confirming physical group IDs.
+
+## 1. Add a NEW batch and prepare it
+
+Put original photos in `data/raw/<batch-name>/`. Subfolders can identify physical
+parcels or recordings. Set `input`, `annotations`, `output` and `temporary` in `workflow.yaml`
+to matching batch folders, then run:
 
 ```sh
 .venv/bin/python workflow.py prepare
 ```
 
-This creates independent clean copies in `data/annotated/next_batch/images/`,
-matching coordinate files in `labels/`, and a `groups.csv` alongside them.
-It creates **no annotations**. Ask the assistant to annotate the prepared batch.
-For an already annotated export, copy its YOLO files to the matching labels paths;
-class IDs must match the master table. Other formats need conversion first.
+This creates one `annotations.json`, keyed by paths relative to the raw folder.
+Different parcel subfolders may therefore both contain `view_01.jpg`. The
+annotation gallery renders boxed previews into the annotated folder, using
+subfolder prefixes in preview filenames to avoid collisions.
+The preparation command refuses to overwrite an existing annotated batch.
+Technical preparation records go in `tmp/<batch>/`.
 
-The first input subfolder supplies the default group ID. With a flat input
-folder, fill the group column in the annotated batch's `groups.csv` before
-splitting. For a photo showing multiple known parcels, use `parcel_A|parcel_B`. The splitter connects
-those groups transitively. Pixel-identical copies are also kept together.
+Ask the assistant to annotate the batch. Model suggestions require review before
+being used as reference boxes. The user prefers assistant-led annotation, with
+manual corrections in the gallery when necessary.
 
-## 2. Split once, before inspecting model performance
+## 2. Understand the ONE coordinate file
+
+Each filename has a record like this; boxes use original-image pixels:
+
+```json
+{
+  "photo_001.png": {
+    "width": 2448,
+    "height": 2048,
+    "group": "physical_parcel_A",
+    "reviewed": true,
+    "barcode": [[100, 200, 280, 300]],
+    "label": [[70, 120, 500, 650]],
+    "parcel": [[20, 50, 1500, 1800]]
+  }
+}
+```
+
+Every box is `[x1, y1, x2, y2]`: top-left and bottom-right corners. An empty class
+list means no visible objects of that class **after review**. `reviewed: false`
+means unfinished annotation and is rejected for training. A missing class field
+also means unannotated, not a negative example. This matters for the older
+`real_photos` collection, which was not annotated for parcels.
+
+Parcel, shipping-label and barcode boxes can overlap. Annotate every visible
+instance, including unreadable barcodes. A shipping label is the whole physical
+label; a barcode box covers the visible bar pattern. Keep one visibility policy
+throughout the batch. `excluded` regions and review notes are optional metadata.
+
+The photographs in `raw/` stay clean. Pictures in `annotated/` show the reference
+boxes. Training reads the raw photographs and the JSON coordinates separately;
+it never uses the pictures with drawn boxes. JSON keys name the raw files,
+while the matching reference preview uses the same stem with a `.jpg` suffix.
+
+## 3. Keep related photographs together, then split
+
+Fill each photo's `group` in `annotations.json`. Every view of the same physical
+parcel must stay in the same group, including views from different recordings.
+For a frame showing two parcels, use `parcel_A|parcel_B`; the code connects both
+groups transitively. Similar-looking parcels do not automatically share identity.
+Byte/pixel-identical copies are also kept together.
 
 ```sh
 .venv/bin/python workflow.py split
 .venv/bin/python workflow.py status
 ```
 
-The default is approximately **70% training, 15% validation, 15% test by group**,
-with seed 42. Groups can have different numbers of photos, so the report shows the
-actual image/object counts. The seed makes assignment reproducible. Check that
-each split represents the conditions and classes you intend to evaluate.
+The default ratios are 70/15/15 by independent group, with seed 42. Actual image
+percentages may differ. At least three independent groups are required, and more
+are preferable. If reused parcels connect the whole collection, collect new,
+independent parcels for validation/test; do not split neighbouring frames apart.
 
-At least three independent groups are needed; many more are preferable for useful
-evaluation. Three groups only establish that the software can form three splits.
-If all photos are connected through the same parcels, the code rejects the split.
-It never breaks a physical group just to reach the requested percentages.
+The code converts JSON boxes to YOLO `.txt` files automatically under `tmp/<batch>/`.
+It freezes image hashes, coordinates, group assignments, seed and class-specific
+views. Changing classes reuses the same group assignment and remaps class IDs.
+Do not edit a frozen view; use a new batch/output for later data corrections.
+Every active class needs examples in the training split.
 
-Images, annotations, configuration and group assignments are frozen by hashes.
-Training requires examples of every active class. Missing annotations, leakage
-and edits to a frozen view are rejected. Correct annotations **before** freezing;
-use a new batch for later corrections or additional photos.
-
-The split is made before baseline analysis so the future test set stays held back.
-The sequence still measures pretrained inference before supervised training.
-
-## 3. Measure the pretrained baseline
+## 4. Measure pretrained inference BEFORE supervised training
 
 ```sh
 .venv/bin/python workflow.py baseline
 ```
 
-The baseline uses the existing barcode model plus YOLO-World parcel/label prompts
-for the enabled classes. It performs inference on **validation only**, saving
-proposals down to confidence 0.001. Each class is searched in the whole image;
-a missed parcel cannot prevent a barcode prediction.
+The baseline searches whole images with the pretrained barcode detector and
+YOLO-World label/parcel prompts. It evaluates validation data only. Saving
+proposals down to confidence 0.001 supports confidence/AP curves; this is not the
+recommended operating threshold. By default, validation selects combined F1's
+best threshold; the fixed preferred confidence is 0.35 when it ties.
 
-By default, confidence is selected by the highest **combined F1 on validation**.
-Every distinct stored score is considered. If the configured 0.35 ties for best
-F1, it is retained; otherwise a point inside the best interval is used. Combined
-F1 pools object counts; always read per-class results as well. To use one fixed
-threshold, set `select_confidence: false` and edit `confidence`.
-
-NMS IoU removes duplicate predictions within a target class. The evaluation IoU
-matches model boxes with reference boxes. These two settings are different.
-Overlapping parcel/label/barcode boxes are preserved across classes.
-
-## 4. Train explicitly
+## 5. Train, validate and finally test
 
 ```sh
 .venv/bin/python workflow.py train --dry-run
 .venv/bin/python workflow.py train
-```
-
-The dry run validates and prints the recipe without loading a model, writing a
-training output or updating weights. The real command requires the completed
-baseline. Training starts from `barcode_weights`; the detector head is adapted
-to the active classes. A new parcel/label class must be learned from your data.
-
-Only **train and validation** are supplied to the optimizer/model selection.
-The test split is never supplied. The best checkpoint, training losses,
-validation curves, settings, versions and data hashes are retained. Settings
-such as epochs and batch size are in `workflow.yaml`.
-
-## 5. Validate the fine-tuned model
-
-```sh
 .venv/bin/python workflow.py validate
-```
-
-This evaluates `best.pt` on validation and chooses its confidence using the same
-selection rule as the baseline. Each model may receive a different threshold,
-because their scores need not have the same calibration. Make model and threshold
-decisions on validation. Validation scores are selection results and can be
-optimistic; they are not the final claim about new operational data.
-
-## 6. Final test and comparison
-
-```sh
 .venv/bin/python workflow.py test
 ```
 
-Both validation selections must be complete and current before either test run.
-The test uses each model's **frozen validation threshold**. It evaluates both
-models on the exact same held-out images and creates a comparison report.
-Repeating a completed command reuses matching reports; it does not silently
-retune or overwrite them. Changed settings/weights require a new `run_name`.
+Dry-run checks the recipe without loading/training a model. Supervised training
+starts from the local barcode weights and adapts a joint detector to the active
+classes. Only training images update weights. Validation selects the checkpoint,
+early stopping and confidence threshold. Test data is used after those choices
+are frozen, with both systems evaluated on the same held-out images.
 
-To regenerate just the comparison from completed reports:
+The default maximum is 100 epochs, batch 4, patience 20, CPU and input size 1280.
+Change these in `workflow.yaml`. Change `run_name` for another experiment.
+`classes: [barcode, label, parcel]` enables all classes; remove names to omit them.
+Master JSON boxes remain intact when a class is disabled.
+
+Reports contain per-class precision, recall, F1, AP/mAP, IoU, confusion matrices,
+confidence curves, CSV/JSON and visual errors. Accuracy is omitted. Mean IoU
+covers matched detections; read false negatives/recall alongside it. Confidence
+is a model score, not proof that a detection is correct.
+
+`test` generates comparison HTML/CSV/JSON; `workflow.py compare` regenerates it
+from completed reports. The baseline combines pretrained detectors, whereas the
+fine-tuned model is one joint detector. Describe the comparison accordingly;
+it does not isolate training as the only changed factor.
+
+## 6. Review annotations and open results
 
 ```sh
-.venv/bin/python workflow.py compare
+.venv/bin/python -m src.export_annotation_gallery
 ```
 
-Do not use final test results to repeatedly choose training settings or confidence.
-If you do inspect test results during development, record that fact and reserve a
-new untouched test collection for the final claim.
+Open `tmp/next_batch/annotation_review/index.html` to select, move, resize,
+add or delete boxes. This disposable editor can be regenerated at any time.
+Open `data/output/next_batch/index.html` for completed model experiments.
+Export `annotations.json`, then ask the assistant to import it into the batch.
+Browser drafts do not modify the saved coordinate file automatically.
 
-Each inference/evaluation folder contains:
+`tmp/<batch>/thumbnails/` contains smaller gallery previews. The gallery falls
+back to full-size previews if the thumbnail cache is deleted.
+`data/annotated/<batch>/` contains the full-size pictures with reference boxes.
+`tmp/` contains generated YOLO datasets and scratch files. It can be deleted.
+The permanent `output/<batch>/dataset_split.json` preserves the exact assignment;
+the next workflow run rebuilds the same training copies from photos and JSON.
+Raw photos, reference pictures, coordinate JSON, checkpoints and reports remain
+outside `tmp/`.
 
-- `index.html`: image review, per-class metrics and explanatory notes.
-- `evaluation.json`: counts, precision, recall, F1, AP/mAP, IoU and match details.
-- `metrics.csv`: per-class and overall numbers for a spreadsheet/report.
-- `detections.csv`: individual TP/FP/FN rows with scores, coordinates and matched IoU.
-- `predictions.json`: all stored candidate boxes, exact models and settings.
-- `confusion_matrix.png`, `iou_distribution.png`, `confidence_analysis.png`.
-- `associations.json`: predicted barcode/label-to-parcel containment candidates.
-  Multiple candidates remain ambiguous. Indices are local to one image and do
-  not establish physical identity or tracking.
-
-Validation also saves `validation_threshold_sweep.json`. The comparison provides
-HTML, CSV and JSON, validation/test tables kept separate, each model's operating
-threshold, per-class AP and counts, confusion matrices and a training-curve link.
-**Accuracy is not calculated.** IoU summaries describe correct matches only.
-Barcode payload correctness, OCR, tracking and re-identification need separate
-ground truth and are not measured by these detection reports.
-
-The baseline is a system of pretrained detectors; the fine-tuned model is a joint
-detector. Their comparison measures the before/after systems. It does not isolate
-fine-tuning as the only changed factor, especially for the new classes.
-
-## Enable, disable or reorder classes
-
-Edit just this list in `workflow.yaml`:
-
-```yaml
-classes: [barcode, label, parcel]  # All three
-# classes: [barcode, label]       # Disable parcel
-# classes: [barcode]              # Barcode only
-# classes: [parcel]               # Parcel only
-```
-
-Then run `split` for that selection. It creates a filtered dataset view and remaps
-class IDs automatically. Master boxes are preserved; **do not delete or renumber
-the original annotation files**. Every selection reuses the common split plan,
-including the same held-out groups. Each selection has its own results folder.
-Removing a class can make a previously positive image a valid negative for the
-remaining classes. Newly enabling a class still requires complete master
-annotations for that class; a configuration entry cannot create missing boxes.
-
-For another training recipe on the same data, change `run_name` to e.g.
-`experiment_02`, then run baseline/train/validate/test. For a new batch, change
-`input`, `annotations` and `output` to matching new batch folders and start with prepare.
-
-```text
-data/
-  raw/next_batch/                 # Original photographs
-  annotated/next_batch/
-    images/                      # Clean working copies; no boxes drawn in pixels
-    labels/                      # Matching YOLO .txt coordinates
-    annotations.manual.json      # Final editable pixel coordinates
-    annotations.coco.json        # COCO export
-    groups.csv                   # Physical parcel/recording IDs
-    data.yaml                    # Class names and image location
-  output/
-    next_batch/
-      annotation_review/index.html
-      split_plan.json
-      datasets/barcode_label_parcel/   # Generated train/val/test copies
-      experiments/experiment_01/barcode_label_parcel/
-        baseline_val/
-        training/detector/weights/best.pt
-        finetuned_val/
-        baseline_test/
-        finetuned_test/
-        comparison/index.html
-    archive/                     # Earlier experiments and recovery files
-```
-
-## Where to read the code
-
-- `workflow.py`: commands and stage order; start reading here.
-- `workflow.yaml`: the settings you normally change.
-- `src/workflow_data.py`: clean copies, group linking, splitting and class filtering.
-- `src/workflow_models.py`: pretrained/joint inference and model provenance.
-- `src/workflow_reports.py`: validation selection, test freezing, CSV and comparison.
-- `src/train_barcodes.py` and `src/evaluate_barcodes.py`: the reused trainer/metrics.
-
-The earlier 23-photo barcode/label collection remains development material. It
-has not been turned into an independent three-class train/test benchmark, and its
-current annotations do not include parcel boxes.
+For a small class-based code example, see `src/simple_ml_example.py` and
+`docs/simple_ml_example.md`. The complete sequence stays in `workflow.py`;
+`src/workflow_data.py` handles JSON, groups and splitting, and
+`src/workflow_reports.py` handles evaluation and model comparison.

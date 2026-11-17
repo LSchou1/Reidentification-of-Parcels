@@ -1,5 +1,0 @@
-# Extra tools for the optional notebook image. The detector dependencies stay in requirements.txt.
-jupyterlab==4.6.4
-ipykernel==6.29.5
-nbclient==0.10.2
-nbformat==5.10.4

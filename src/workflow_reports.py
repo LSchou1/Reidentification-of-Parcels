@@ -13,6 +13,30 @@ from src.workflow_data import frozen_dataset, save_json
 from src.workflow_models import model_files, predict_boxes
 
 
+def write_output_index(config):
+    """One starting page for completed model experiments and their split record."""
+    output = Path(config["output"])
+    if not output.exists():
+        return
+    links = []
+    for run in sorted((output / "experiments").glob("*/*")):
+        if not run.is_dir():
+            continue
+        pages = [(p.parent.name.replace("_", " "), p.relative_to(run).as_posix())
+                 for p in sorted(run.glob("*/index.html"))]
+        checkpoint = run / "training/detector/weights/best.pt"
+        if checkpoint.exists():
+            pages.append(("Trained model", checkpoint.relative_to(run).as_posix()))
+        if pages:
+            items = "".join(f'<li><a href="{html.escape(path)}">{html.escape(label)}</a></li>' for label, path in pages)
+            (run / "index.html").write_text(f'<!doctype html><meta charset="utf-8"><title>Experiment</title><h1>{html.escape(run.parent.name)} — {html.escape(run.name)}</h1><ul>{items}</ul>')
+            links.append((f"{run.parent.name}: {run.name}", (run / "index.html").relative_to(output).as_posix()))
+    if (output / "dataset_split.json").exists():
+        links.append(("Fixed dataset split", "dataset_split.json"))
+    items = "".join(f'<li><a href="{html.escape(path)}">{html.escape(label)}</a></li>' for label, path in links)
+    (output / "index.html").write_text(f'<!doctype html><meta charset="utf-8"><title>Batch results</title><h1>{html.escape(output.name)} — results</h1><ul>{items}</ul><p>Temporary previews and generated training copies are stored separately in tmp/.</p>')
+
+
 def choose_confidence(samples, names, floor, overlap, preferred=0.35):
     """Try every distinct prediction cutoff, using validation data only.
 
@@ -99,7 +123,7 @@ def finish_report(result, output):
 
 def run_analysis(config, run_root, kind, split, trained_weights=None):
     """Evaluate a model; choose on val, reuse that exact choice on test."""
-    dataset, dataset_hash = frozen_dataset(config["output"], config["classes"])
+    dataset, dataset_hash = frozen_dataset(config["temporary"], config["classes"])
     files = model_files(config, kind, trained_weights)
     validation_hash, threshold = None, config["confidence"]
     if split == "test":

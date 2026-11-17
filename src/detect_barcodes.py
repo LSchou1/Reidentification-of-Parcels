@@ -216,7 +216,7 @@ def positive_integer(text):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=ROOT / "data/raw/next_batch")
-    parser.add_argument("--output", type=Path, default=ROOT / "data/output/barcodes")
+    parser.add_argument("--output", type=Path, default=ROOT / "data/output/next_batch/inference")
     parser.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
     parser.add_argument("--confidence", type=confidence_value, default=0.25)
     parser.add_argument("--imgsz", type=positive_integer, default=1280)

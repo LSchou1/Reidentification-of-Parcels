@@ -1,31 +1,23 @@
-"""Export manually reviewed parcel photo boxes to YOLO, COCO and a visual gallery."""
+"""Build a review gallery from clean photos and annotations.json; outputs stay separate."""
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import html
 import hashlib
 from pathlib import Path
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageOps
+from workflow import read_config
+from src.barcode_dataset import EXTENSIONS
+from src.workflow_reports import write_output_index
 
 CODE_ROOT = Path(__file__).resolve().parents[1]
-ROOT = CODE_ROOT / "data/annotated/next_batch"
-IMAGE_DIR = ROOT / "images"
-LABEL_DIR = ROOT / "labels"
-REVIEW_DIR = ROOT.parents[1] / "output" / ROOT.name / "annotation_review"
-MARKED_DIR = REVIEW_DIR / "annotated"
-THUMB_DIR = REVIEW_DIR / "thumbnails"
-ANNOTATIONS = ROOT / "annotations.manual.json"
 CLASSES = {"b": (0, "barcode", "#25b9ff"), "l": (1, "shipping label", "#39d879"), "p": (2, "parcel", "#ff5757")}
 
 
-def xyxy_to_yolo(box, width, height):
-    x1, y1, x2, y2 = box
-    return ((x1 + x2) / (2 * width), (y1 + y2) / (2 * height), (x2 - x1) / width, (y2 - y1) / height)
-
-
 def draw_review(image_path, annotation, thumb_path, marked_path):
-    image = Image.open(image_path).convert("RGB")
+    image = ImageOps.exif_transpose(Image.open(image_path)).convert("RGB")
     draw = ImageDraw.Draw(image)
     for key, (_, label, color) in CLASSES.items():
         for box in annotation.get(key, []):
@@ -39,59 +31,69 @@ def draw_review(image_path, annotation, thumb_path, marked_path):
     image.save(thumb_path, quality=88)
 
 
-def main():
-    annotations = json.loads(ANNOTATIONS.read_text())
-    provenance_path = ROOT / "review_provenance.json"
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=CODE_ROOT / "workflow.yaml")
+    settings = read_config(parser.parse_args(argv).config)
+    ROOT = Path(settings["annotations"])
+    IMAGE_DIR = Path(settings["input"])
+    REVIEW_DIR = Path(settings["temporary"]) / "annotation_review"
+    MARKED_DIR, THUMB_DIR = ROOT, Path(settings["temporary"]) / "thumbnails"
+    WORK_DIR = Path(settings["temporary"])
+    WORK_DIR.mkdir(parents=True, exist_ok=True)
+    records = json.loads((ROOT / "annotations.json").read_text())
+    annotations = {name: {"b": record.get("barcode", []), "l": record.get("label", []),
+                         "p": record.get("parcel", []), "e": record.get("excluded", []),
+                         "note": record.get("note", "")} for name, record in records.items()}
+    provenance_path = WORK_DIR / "review_provenance.json"
     provenance = json.loads(provenance_path.read_text()) if provenance_path.exists() else {}
     user_corrected = set(provenance.get("user_corrected_images", []))
     final_set = provenance.get("final_annotation_set", {}).get("status") == "user_final"
-    files = sorted(IMAGE_DIR.glob("*.png"))
-    if len(files) != 100 or len(annotations) != 100:
-        raise SystemExit(f"Expected 100 images and annotation records; got {len(files)} and {len(annotations)}")
-    LABEL_DIR.mkdir(parents=True, exist_ok=True)
+    files = sorted(IMAGE_DIR / name for name in records)
+    if any(not p.resolve().is_relative_to(IMAGE_DIR.resolve()) or not p.is_file() for p in files):
+        raise ValueError("Each photo needs exactly one annotations.json record.")
     MARKED_DIR.mkdir(parents=True, exist_ok=True)
     THUMB_DIR.mkdir(parents=True, exist_ok=True)
+    REVIEW_DIR.mkdir(parents=True, exist_ok=True)
     coco = {"images": [], "annotations": [], "categories": [{"id": i, "name": n} for i, n, _ in CLASSES.values()]}
     html_rows = []
     counts = {n: 0 for _, n, _ in CLASSES.values()}
     for image_id, path in enumerate(files, 1):
-        key = ("A" if "_154248_" in path.name else "B") + f"{int(path.stem[-6:]):02d}"
-        ann = annotations[key]
+        name = path.relative_to(IMAGE_DIR).as_posix()
+        key = records[name].get("review_id", name)
+        ann = annotations[name]
         with Image.open(path) as im:
-            w, h = im.size
-        entries = []
+            w, h = ImageOps.exif_transpose(im).size
         for short, (class_id, label, color) in CLASSES.items():
             for box in ann.get(short, []):
                 x1, y1, x2, y2 = map(int, box)
                 if not (0 <= x1 < x2 <= w and 0 <= y1 < y2 <= h):
                     raise ValueError(f"Invalid {key} {label} box: {box} for {w}x{h}")
-                xc, yc, bw, bh = xyxy_to_yolo(box, w, h)
-                entries.append(f"{class_id} {xc:.8f} {yc:.8f} {bw:.8f} {bh:.8f}")
                 counts[label] += 1
                 coco["annotations"].append({"id": len(coco["annotations"]) + 1, "image_id": image_id, "category_id": class_id, "bbox": [x1, y1, x2-x1, y2-y1], "area": (x2-x1)*(y2-y1), "iscrowd": 0})
-        (LABEL_DIR / f"{path.stem}.txt").write_text("\n".join(entries) + ("\n" if entries else ""))
-        coco["images"].append({"id": image_id, "file_name": path.name, "width": w, "height": h})
-        thumb = f"{path.stem}.jpg"
+        coco["images"].append({"id": image_id, "file_name": name, "width": w, "height": h})
+        thumb = str(Path(name).with_suffix(".jpg")).replace("/", "__")
+        marked_link = html.escape(os.path.relpath(MARKED_DIR / thumb, REVIEW_DIR), quote=True)
         draw_review(path, ann, THUMB_DIR / thumb, MARKED_DIR / thumb)
         note = ("Your corrected boxes were imported and preserved. Earlier assistant notes for this image have been superseded."
                 if key in user_corrected else ann.get("note", ""))
         if final_set:
             note = "Final annotations supplied by you and saved unchanged. Earlier assistant review notes are historical."
         excluded = len(ann.get("e", []))
-        html_rows.append(f'<article id="{key}"><h2>{key} <small>{path.name}</small></h2><a href="annotated/{thumb}"><img src="thumbnails/{thumb}" loading="lazy"></a><p>Parcels: {len(ann.get("p", []))} · Barcodes: {len(ann.get("b", []))} · Shipping labels: {len(ann.get("l", []))} · Excluded stickers: {excluded}</p><p>{html.escape(note)}</p><p><a href="{os.path.relpath(path, REVIEW_DIR)}">Clean image</a> · <a href="annotated/{thumb}">Full-size annotated copy</a> · <button class="edit-image" data-key="{key}">Add or edit boxes</button></p></article>')
+        html_rows.append(f'<article id="{key}"><h2>{key} <small>{path.name}</small></h2><a href="{marked_link}"><img src="{os.path.relpath(THUMB_DIR / thumb, REVIEW_DIR)}" onerror="this.onerror=null;this.src=&quot;{marked_link}&quot;" loading="lazy"></a><p>Parcels: {len(ann.get("p", []))} · Barcodes: {len(ann.get("b", []))} · Shipping labels: {len(ann.get("l", []))} · Excluded stickers: {excluded}</p><p>{html.escape(note)}</p><p><a href="{os.path.relpath(path, REVIEW_DIR)}">Clean image</a> · <a href="{marked_link}">Full-size annotated copy</a> · <button class="edit-image" data-key="{key}">Add or edit boxes</button></p></article>')
     editor_data = {}
     for path in files:
-        key = ("A" if "_154248_" in path.name else "B") + f"{int(path.stem[-6:]):02d}"
+        name = path.relative_to(IMAGE_DIR).as_posix()
+        key = records[name].get("review_id", name)
         with Image.open(path) as im:
-            w, h = im.size
+            w, h = ImageOps.exif_transpose(im).size
         review_note = ("Your corrected boxes were imported and preserved. Earlier assistant notes for this image have been superseded."
-                       if key in user_corrected else annotations[key].get("note", ""))
+                       if key in user_corrected else annotations[name].get("note", ""))
         if final_set:
             review_note = "Final annotations supplied by you and saved unchanged. Earlier assistant review notes are historical."
-        editor_data[key] = {"src": f"{os.path.relpath(path, REVIEW_DIR)}", "width": w, "height": h, "annotation": annotations[key], "review_note": review_note}
+        editor_data[key] = {"src": f"{os.path.relpath(path, REVIEW_DIR)}", "width": w, "height": h, "filename": name, "record": records[name], "annotation": annotations[name], "review_note": review_note}
     embedded_data = json.dumps(editor_data, ensure_ascii=True).replace("</", "<\\/")
-    (ROOT / "annotations.coco.json").write_text(json.dumps(coco, indent=2) + "\n")
-    (ROOT / "data.yaml").write_text("path: .\nval: images\nnames:\n  0: barcode\n  1: label\n  2: parcel\n")
+    (WORK_DIR / "annotations.coco.json").write_text(json.dumps(coco, indent=2) + "\n")
     page = '''<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Incoming photo annotation review</title><style>
 body{font:16px system-ui;background:#10151b;color:#e8edf2;margin:24px}header{position:sticky;top:0;z-index:2;background:#10151bf2;padding:12px;border-bottom:1px solid #334}article{max-width:960px;margin:28px auto;padding:18px;background:#1b232c;border-radius:12px}article img{width:100%;height:auto}small{display:block;font-size:12px;overflow-wrap:anywhere;color:#9bb}a{color:#75c8ff}button,select{font:inherit;padding:8px 12px;border-radius:7px;border:1px solid #667;background:#263442;color:#fff;cursor:pointer}button:disabled{opacity:.5;cursor:default}.top-actions{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.hint{color:#c4d3df;font-size:14px}.editor{position:fixed;inset:0;z-index:5;background:#0c1117f5;overflow:auto;padding:18px}.editor[hidden]{display:none}.editor-head{position:sticky;top:-18px;background:#10151bf5;padding:12px 0;z-index:2}.controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.canvas-frame{position:relative;display:inline-block;line-height:0;margin-top:14px;max-width:100%}.canvas-frame img{display:block;max-width:min(100%,1200px);max-height:72vh;width:auto;height:auto;object-fit:contain}.canvas-frame canvas{position:absolute;inset:0;cursor:crosshair;touch-action:none}.box-list{max-width:1200px;line-height:1.8}.box-list button{padding:3px 8px;margin-left:8px}.box-row{cursor:pointer;padding:2px 6px}.box-row.selected{background:#314354;border-radius:5px}.status{color:#9fe3b0;min-height:1.5em}.class-b{color:#25b9ff}.class-l{color:#39d879}.class-p{color:#ff5757}.class-e{color:#ffb82e}
 /* The stage keeps a fixed size; the box list cannot shift it while dragging. */
@@ -133,10 +135,11 @@ button[aria-pressed="true"]{background:#23618d;border-color:#8ed1ff}
 <script>const originalData=__ANNOTATIONS__; const annotationRevision=__ANNOTATION_REVISION__;</script>
 <script>__EDITOR_SCRIPT__</script></body></html>'''
     page = page.replace("__ANNOTATIONS__", embedded_data)
-    revision = hashlib.sha256(json.dumps(annotations, sort_keys=True).encode()).hexdigest()[:16]
+    revision = hashlib.sha256(json.dumps(records, sort_keys=True).encode()).hexdigest()[:16]
     page = page.replace("__ANNOTATION_REVISION__", json.dumps(revision))
     page = page.replace("__EDITOR_SCRIPT__", (CODE_ROOT / "src/annotation_editor.js").read_text())
     (REVIEW_DIR / "index.html").write_text(page)
+    write_output_index(settings)
     print(f"Exported {len(files)} images; boxes: {counts}; COCO objects: {len(coco['annotations'])}")
 
 if __name__ == "__main__":

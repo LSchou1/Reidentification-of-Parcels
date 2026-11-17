@@ -1,4 +1,4 @@
-"""Copy a photo batch, then make a reproducible split by physical parcel/recording.
+"""Prepare photo coordinates, then make a reproducible split by physical parcel/recording.
 
 Different parcels may look alike. Only explicit group IDs and identical pixels
 connect images here; the splitter never groups images by their appearance.
@@ -7,6 +7,7 @@ connect images here; the splitter never groups images by their appearance.
 import csv
 import hashlib
 import json
+import math
 from pathlib import Path
 import random
 import shutil
@@ -15,7 +16,7 @@ import tempfile
 import cv2
 import yaml
 
-from src.barcode_dataset import EXTENSIONS, check_dataset, dataset_summary, label_path, read_annotations
+from src.barcode_dataset import EXTENSIONS, check_dataset, dataset_summary, label_path
 from src.setup_barcode_model import sha256
 
 
@@ -25,68 +26,80 @@ def save_json(path, value):
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
-def prepare_photos(source, annotations, names):
-    """Make clean copies. Missing annotations remain missing, never fake negatives."""
-    source, annotations = Path(source).resolve(), Path(annotations).resolve()
-    pool = annotations
-    if pool.exists():
-        raise ValueError("This annotated batch already exists. Choose a new batch name; existing annotations are preserved.")
-    if source == annotations or source.is_relative_to(annotations) or annotations.is_relative_to(source):
-        raise ValueError("Keep raw photos and annotated photos in separate folders.")
+def prepare_photos(source, annotations, temporary, names):
+    """Prepare ONE coordinate JSON; keep clean source pixels only in raw/."""
+    source, annotations, temporary = (Path(p).resolve() for p in (source, annotations, temporary))
+    if annotations.exists():
+        raise ValueError("This annotated batch already exists. Choose a new batch name.")
+    for first, second in ((source, annotations), (source, temporary), (annotations, temporary)):
+        if first == second or first.is_relative_to(second) or second.is_relative_to(first):
+            raise ValueError("Keep raw photos, annotated photos and temporary files separate.")
     images = sorted(p for p in source.rglob("*") if p.suffix.lower() in EXTENSIONS)
     if not images:
         raise ValueError(f"No JPG/JPEG/PNG photos in {source}. Add photos first.")
+    preparation = temporary / "preparation.json"
+    if preparation.exists():
+        raise ValueError("This temporary folder belongs to an existing batch. Choose a new folder.")
     annotations.parent.mkdir(parents=True, exist_ok=True)
-    # Build in a temporary folder, so a failed check cannot leave half a batch.
-    with tempfile.TemporaryDirectory(dir=annotations.parent, prefix="prepare_") as temporary:
-        staging = Path(temporary) / "pool"
-        records, stems, groups = [], set(), []
-        for source_image in images:
-            relative = source_image.relative_to(source)
-            stem = relative.with_suffix("").as_posix().casefold()
+    temporary.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=temporary, prefix="prepare_") as staging_parent:
+        staging = Path(staging_parent) / "batch"
+        staging.mkdir()
+        records, coordinates, stems = [], {}, set()
+        for image in images:
+            relative = image.relative_to(source)
+            # Preserve identity when two raw subfolders both contain view_01.jpg.
+            filename = "__".join(relative.parts)
+            stem = Path(filename).stem.casefold()
             if stem in stems:
-                raise ValueError(f"Two photos would share one annotation file: {relative}")
+                raise ValueError(f"Two photos would share a filename: {relative}")
             stems.add(stem)
-            pixels = cv2.imread(str(source_image))
+            pixels = cv2.imread(str(image))
             if pixels is None:
-                raise ValueError(f"Unreadable photo: {source_image}")
-            target = staging / "images" / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_image, target)
-            image_name = target.relative_to(staging).as_posix()
+                raise ValueError(f"Unreadable photo: {image}")
+            image_name = relative.as_posix()
             height, width = pixels.shape[:2]
-            records.append({"image": image_name, "sha256": sha256(target),
+            records.append({"image": image_name, "sha256": sha256(image),
                             "width": width, "height": height,
                             "pixel_sha256": hashlib.sha256(str(pixels.shape).encode() + pixels.tobytes()).hexdigest()})
-            # One top-level folder = one physical parcel or recording group.
-            # Flat input has no known identity, so the CSV must be filled in.
-            groups.append((image_name, relative.parts[0] if len(relative.parts) > 1 else ""))
-            label_path(target).parent.mkdir(parents=True, exist_ok=True)
-        (staging / "data.yaml").write_text(yaml.safe_dump(
-            {"path": ".", "val": "images", "names": dict(enumerate(names))}, sort_keys=False))
-        with (staging / "groups.csv").open("w", newline="", encoding="utf-8") as stream:
-            writer = csv.writer(stream)
-            writer.writerow(["image", "group"])
-            writer.writerows(groups)
-        save_json(staging / "preparation.json", {"source": str(source), "images": records})
-        staging.rename(pool)
-    return {"images": len(records), "annotations": str(pool), "annotation_folder": str(pool / "labels")}
+            coordinates[image_name] = {"width": width, "height": height,
+                "group": relative.parts[0] if len(relative.parts) > 1 else "",
+                "reviewed": False, **{name: [] for name in names}}
+        save_json(staging / "annotations.json", coordinates)
+        staging.rename(annotations)
+        save_json(preparation, {"source": str(source), "images": records})
+    return {"images": len(records), "annotations": str(annotations / "annotations.json")}
 
 
-def related_groups(records, groups_file):
+def coordinate_boxes(record, names, filename):
+    """Read pixel boxes; an unreviewed/absent class must never become a negative."""
+    if record.get("reviewed") is not True:
+        raise ValueError(f"Missing annotation review for {filename}. Finish its JSON record first.")
+    width, height = record["width"], record["height"]
+    boxes = []
+    for name in names:
+        if name not in record or not isinstance(record[name], list):
+            raise ValueError(f"Missing annotation class {name} for {filename}.")
+        for box in record[name]:
+            if not isinstance(box, list) or len(box) != 4 or any(
+                    isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) for v in box):
+                raise ValueError(f"Invalid {name} coordinates for {filename}.")
+            x1, y1, x2, y2 = box
+            if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
+                raise ValueError(f"Invalid {name} box outside {filename}.")
+            boxes.append({"class": name, "xyxy": box})
+    return boxes
+
+
+def related_groups(records, rows):
     """Connect explicit IDs transitively, including photos showing several parcels.
 
     Use A|B for a photo showing parcels A and B. That links all A and B photos.
     Byte/pixel-identical copies are also connected, even if their IDs differ.
     """
     by_image = {record["image"]: record for record in records}
-    with Path(groups_file).open(newline="", encoding="utf-8") as stream:
-        reader = csv.DictReader(stream)
-        if reader.fieldnames != ["image", "group"]:
-            raise ValueError("groups.csv needs exactly the columns image,group.")
-        rows = list(reader)
     if len(rows) != len(by_image) or {row["image"] for row in rows} != set(by_image):
-        raise ValueError("groups.csv must list every prepared image exactly once.")
+        raise ValueError("Grouping must list every prepared image exactly once.")
     parents = {image: image for image in by_image}
 
     def root(image):
@@ -97,9 +110,11 @@ def related_groups(records, groups_file):
     owners = {}
     for row in rows:
         image = row["image"]
-        ids = [value.strip() for value in (row["group"] or "").split("|")]
+        if not isinstance(row["group"], str):
+            raise ValueError(f"Group IDs must be text in annotations.json: {image}.")
+        ids = [value.strip() for value in row["group"].split("|")]
         if not all(ids):
-            raise ValueError(f"Missing group for {image}. Fill annotated batch groups.csv with physical parcel or recording IDs.")
+            raise ValueError(f"Missing group for {image}. Fill its group field in annotations.json with physical parcel or recording IDs.")
         tokens = ["id:" + value for value in ids] + ["pixels:" + by_image[image]["pixel_sha256"]]
         for token in tokens:
             if token in owners:
@@ -131,57 +146,75 @@ def group_counts(number, ratios):
     return counts
 
 
-def dataset_directory(output, classes):
+def dataset_directory(temporary, classes):
     """Each class selection has its own view; master annotations stay untouched."""
-    return Path(output) / "datasets" / "_".join(classes)
+    return Path(temporary) / "datasets" / "_".join(classes)
 
 
-def split_photos(annotations, output, ratios, seed, classes=None):
+def split_photos(source, annotations, temporary, output, ratios, seed, classes=None):
     """Copy reviewed images/boxes into a new, fixed train/validation/test dataset."""
-    pool, output = Path(annotations).resolve(), Path(output).resolve()
-    if pool == output or pool.is_relative_to(output) or output.is_relative_to(pool):
-        raise ValueError("Keep annotation masters and generated outputs in separate folders.")
-    pool_config = yaml.safe_load((pool / "data.yaml").read_text())
-    master_names = list(pool_config["names"].values())
+    pool, annotated, temporary, output = (Path(p).resolve() for p in (source, annotations, temporary, output))
+    folders = [pool, annotated, temporary, output]
+    for index, first in enumerate(folders):
+        for second in folders[index + 1:]:
+            if first == second or first.is_relative_to(second) or second.is_relative_to(first):
+                raise ValueError("Keep raw photos, annotations, outputs and temporary files separate.")
+    coordinates_path = annotated / "annotations.json"
+    coordinates = json.loads(coordinates_path.read_text())
+    master_names = ["barcode", "label", "parcel"]
     classes = master_names if classes is None else classes
     if not classes or len(set(classes)) != len(classes) or not set(classes).issubset(master_names):
         raise ValueError(f"Choose unique active classes from {master_names}.")
-    destination = dataset_directory(output, classes)
-    if destination.exists():
-        frozen_dataset(output, classes)
-        previous = json.loads((destination / "split_manifest.json").read_text())
-        if previous["seed"] != seed or previous["requested_group_ratios"] != ratios:
-            raise ValueError("This split is frozen. Use a new batch to change its seed or ratios.")
-        return previous["summary"]
-    preparation = json.loads((pool / "preparation.json").read_text())
+    destination = dataset_directory(temporary, classes)
+    preparation_path = temporary / "preparation.json"
+    if not preparation_path.exists():
+        # tmp/ may be deleted. Rebuild fingerprints from the permanent clean raw photos.
+        records = []
+        for image in sorted(pool.rglob("*")):
+            if image.suffix.lower() not in EXTENSIONS:
+                continue
+            pixels = cv2.imread(str(image))
+            if pixels is None:
+                raise ValueError(f"Unreadable photo: {image}")
+            height, width = pixels.shape[:2]
+            records.append({"image": image.relative_to(pool).as_posix(), "width": width, "height": height,
+                "sha256": sha256(image), "pixel_sha256": hashlib.sha256(str(pixels.shape).encode() + pixels.tobytes()).hexdigest()})
+        save_json(preparation_path, {"images": records})
+    preparation = json.loads(preparation_path.read_text())
     records = preparation["images"]
-    # Verify the clean copies before trusting cached pixel fingerprints.
-    actual = {p.relative_to(pool).as_posix() for p in (pool / "images").rglob("*") if p.suffix.lower() in EXTENSIONS}
-    if actual != {r["image"] for r in records}:
-        raise ValueError("The prepared photo list changed. Prepare a new batch instead of adding files to the annotated batch.")
+    actual = {p.relative_to(pool).as_posix() for p in pool.rglob("*") if p.suffix.lower() in EXTENSIONS}
+    if actual != {r["image"] for r in records} or set(coordinates) != actual:
+        raise ValueError("The photo list or JSON image list changed. Prepare a new batch.")
     for record in records:
-        if sha256(pool / record["image"]) != record["sha256"]:
-            raise ValueError(f"A clean photo changed: {record['image']}. Prepare a new batch.")
-    groups = related_groups(records, pool / "groups.csv")
+        name = record["image"]
+        if not (pool / name).resolve().is_relative_to(pool) or sha256(pool / name) != record["sha256"]:
+            raise ValueError(f"A clean photo changed: {name}. Prepare a new batch.")
+        annotation = coordinates[name]
+        if (annotation.get("width"), annotation.get("height")) != (record["width"], record["height"]):
+            raise ValueError(f"Annotation dimensions differ from the photo: {name}.")
+    rows = [{"image": r["image"], "group": coordinates[r["image"]].get("group", "")} for r in records]
+    groups = related_groups(records, rows)
     counts = group_counts(len(groups), ratios)
-    # Check annotations after groups; a blank .txt is allowed only for a reviewed negative.
-    check_dataset(pool / "data.yaml", required=("val",))
+    # Parse all active classes before creating any generated files.
+    boxes_by_image = {r["image"]: coordinate_boxes(coordinates[r["image"]], [name for name in master_names if name in classes], r["image"]) for r in records}
     random.Random(seed).shuffle(groups)
     by_image = {record["image"]: record for record in records}
     # Class selection must not reshuffle test images. Freeze the common plan once.
     plan = {"seed": seed, "ratios": ratios, "groups": groups,
-            "pool_config_sha256": sha256(pool / "data.yaml"),
-            "pool_images": {r["image"]: r["sha256"] for r in records},
-            "pool_annotations": {r["image"]: sha256(label_path(pool / r["image"])) for r in records},
-            "group_csv_sha256": sha256(pool / "groups.csv")}
-    plan_path = output / "split_plan.json"
+            "annotations_sha256": sha256(coordinates_path),
+            "images": {r["image"]: r["sha256"] for r in records}}
+    plan_path = output / "dataset_split.json"
     if plan_path.exists() and json.loads(plan_path.read_text()) != plan:
         raise ValueError("Photos, annotations, grouping, ratios or seed changed after the split was frozen. Use a new batch; class toggles can reuse the existing plan.")
+    if destination.exists():
+        frozen_dataset(temporary, classes)
+        return json.loads((destination / "split_manifest.json").read_text())["summary"]
     manifest = {"seed": seed, "requested_group_ratios": ratios, "classes": classes,
                 "images": [], "groups": counts}
     output.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=output, prefix="split_") as temporary:
-        staging = Path(temporary) / "dataset"
+    temporary.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=temporary, prefix="split_") as staging_parent:
+        staging = Path(staging_parent) / "dataset"
         config = {"path": ".", "names": dict(enumerate(classes))}
         group_rows, offset = [], 0
         for split, number in counts.items():
@@ -190,14 +223,14 @@ def split_photos(annotations, output, ratios, seed, classes=None):
                 group_id = f"group_{index:05d}"
                 for image in images:
                     source = pool / image
-                    relative = source.relative_to(pool / "images")
+                    relative = source.relative_to(pool)
                     target = staging / "images" / split / relative
                     target.parent.mkdir(parents=True, exist_ok=True)
                     label_path(target).parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(source, target)
                     # Map by class name. Removing/reordering a class never corrupts IDs.
                     record = by_image[image]
-                    boxes = read_annotations(label_path(source), record["width"], record["height"], master_names)
+                    boxes = boxes_by_image[image]
                     lines = []
                     for box in boxes:
                         if box["class"] not in classes:
@@ -230,9 +263,9 @@ def split_photos(annotations, output, ratios, seed, classes=None):
     return manifest["summary"]
 
 
-def frozen_dataset(output, classes):
+def frozen_dataset(temporary, classes):
     """Reject edits after splitting, so model reports keep referring to the same data."""
-    data = dataset_directory(output, classes) / "data.yaml"
+    data = dataset_directory(temporary, classes) / "data.yaml"
     manifest_path = data.parent / "split_manifest.json"
     if not manifest_path.is_file():
         raise ValueError("Run prepare, annotate the batch, then run split first.")

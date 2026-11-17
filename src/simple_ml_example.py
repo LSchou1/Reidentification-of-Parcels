@@ -81,7 +81,7 @@ class ParcelDetector:
         return main(arguments)
 
     def splitData(self):
-        # Kræver annotationer og fysiske pakke-ID'er i groups.csv først.
+        # Kræver annotationer og fysiske pakke-ID'er i annotations.json først.
         return self.runStep("split")
 
     def runBaseline(self):

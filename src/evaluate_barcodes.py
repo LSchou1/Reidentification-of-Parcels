@@ -333,7 +333,7 @@ def main(argv=None):
     source = parser.add_mutually_exclusive_group()
     source.add_argument("--predictions", type=Path, help="Existing barcodes.json; images are verified by checksum.")
     source.add_argument("--weights", type=Path, default=None)
-    parser.add_argument("--output", type=Path, default=ROOT / "data/output/evaluation")
+    parser.add_argument("--output", type=Path, default=ROOT / "data/output/next_batch/evaluation")
     parser.add_argument("--confidence", type=confidence_value, default=0.25)
     parser.add_argument("--iou", type=confidence_value, default=0.5)
     parser.add_argument("--prediction-floor", type=confidence_value, default=0.001)

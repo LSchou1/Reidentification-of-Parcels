@@ -26,3 +26,6 @@ models/*
 
 # Local alias for the existing text-encoder cache.
 /weights/
+
+# Retired projects and original annotation history stay local.
+/tmp/

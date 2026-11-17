@@ -18,7 +18,7 @@ from src.setup_barcode_model import sha256
 from src.train_barcodes import run_training
 from src.workflow_data import dataset_directory, frozen_dataset, group_counts, prepare_photos, save_json, split_photos
 from src.workflow_models import model_files
-from src.workflow_reports import analysis_request, comparison_report, run_analysis
+from src.workflow_reports import analysis_request, comparison_report, run_analysis, write_output_index
 
 
 MASTER_CLASSES = ["barcode", "label", "parcel"]
@@ -30,7 +30,7 @@ def read_config(path):
     config = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(config, dict):
         raise ValueError("The configuration must be a YAML mapping; start from workflow.yaml.")
-    required = ["input", "annotations", "output", "classes", "run_name", "split", "seed", "barcode_weights", "world_weights",
+    required = ["input", "annotations", "output", "temporary", "classes", "run_name", "split", "seed", "barcode_weights", "world_weights",
                 "device", "imgsz", "prediction_floor", "nms_iou", "iou", "confidence", "select_confidence", "training"]
     missing = [key for key in required if key not in config]
     if missing:
@@ -40,12 +40,13 @@ def read_config(path):
         raise ValueError("classes must contain a non-empty, unique selection of barcode, label and parcel.")
     if not isinstance(config["run_name"], str) or not re.fullmatch(r"[A-Za-z0-9_-]+", config["run_name"]):
         raise ValueError("run_name may contain letters, numbers, underscores and hyphens.")
-    for key in ("input", "annotations", "output", "barcode_weights", "world_weights"):
+    for key in ("input", "annotations", "output", "temporary", "barcode_weights", "world_weights"):
         config[key] = str((path.parent / config[key]).resolve())
-    raw, annotated, output = (Path(config[key]) for key in ("input", "annotations", "output"))
-    for first, second in ((raw, annotated), (raw, output), (annotated, output)):
-        if first == second or first.is_relative_to(second) or second.is_relative_to(first):
-            raise ValueError("Keep input, annotations and output in three separate folders.")
+    folders = [Path(config[key]) for key in ("input", "annotations", "output", "temporary")]
+    for index, first in enumerate(folders):
+        for second in folders[index + 1:]:
+            if first == second or first.is_relative_to(second) or second.is_relative_to(first):
+                raise ValueError("Keep input, annotations, output and temporary files separate.")
     for key in ("prediction_floor", "nms_iou", "iou", "confidence"):
         value = config[key]
         if not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 < value <= 1:
@@ -67,7 +68,7 @@ def run_directory(config):
 
 def training_request(config):
     """Bind a checkpoint to the exact dataset, starting weights and settings."""
-    _, dataset_hash = frozen_dataset(config["output"], config["classes"])
+    _, dataset_hash = frozen_dataset(config["temporary"], config["classes"])
     weights = Path(config["barcode_weights"])
     if not weights.is_file():
         raise ValueError(f"Missing training starting weights: {weights}")
@@ -101,7 +102,7 @@ def train(config, dry_run=False):
         if baseline["workflow"]["request"] != expected:
             raise ValueError("Baseline settings changed. Choose a new run_name and run baseline again.")
     args = argparse.Namespace(
-        data=dataset_directory(config["output"], config["classes"]) / "data.yaml",
+        data=dataset_directory(config["temporary"], config["classes"]) / "data.yaml",
         weights=Path(config["barcode_weights"]), output=root / "training",
         epochs=config["training"]["epochs"], batch=config["training"]["batch"],
         patience=config["training"]["patience"], imgsz=config["imgsz"],
@@ -117,7 +118,7 @@ def test_models(config):
     """Check BOTH validation selections before either model sees the test set."""
     root = run_directory(config)
     weights = require_trained_model(config)
-    _, dataset_hash = frozen_dataset(config["output"], config["classes"])
+    _, dataset_hash = frozen_dataset(config["temporary"], config["classes"])
     for kind in ("baseline", "finetuned"):
         path = root / f"{kind}_val/evaluation.json"
         if not path.is_file():
@@ -135,7 +136,7 @@ def main(argv=None):
     parser.add_argument("--config", type=Path, default=Path(__file__).with_name("workflow.yaml"))
     commands = parser.add_subparsers(dest="command", required=True)
     for name, help_text in [
-        ("prepare", "Copy a batch; then ask the assistant to annotate it."),
+        ("prepare", "Prepare coordinate JSON; then ask the assistant to annotate."),
         ("split", "Make/freeze grouped train, validation and test data."),
         ("baseline", "Pretrained inference and analysis on validation."),
         ("validate", "Fine-tuned inference and analysis on validation."),
@@ -150,12 +151,16 @@ def main(argv=None):
     try:
         config = read_config(args.config)
         root = run_directory(config)
+        if args.command in {"baseline", "train", "validate", "test", "compare"}:
+            # Deleting tmp is safe: rebuild the same frozen view before using it.
+            if not (dataset_directory(config["temporary"], config["classes"]) / "data.yaml").exists():
+                split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"])
         if args.command == "prepare":
-            result = prepare_photos(config["input"], config["annotations"], MASTER_CLASSES)
+            result = prepare_photos(config["input"], config["annotations"], config["temporary"], MASTER_CLASSES)
             print(json.dumps(result, indent=2))
-            print("Next: annotate the clean images in the annotations folder; confirm its groups.csv, then run split.")
+            print("Next: fill annotations.json with reviewed boxes and physical group IDs, then run split.")
         elif args.command == "split":
-            print(json.dumps(split_photos(config["annotations"], config["output"], config["split"], config["seed"], config["classes"]), indent=2))
+            print(json.dumps(split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"]), indent=2))
         elif args.command == "baseline":
             run_analysis(config, root, "baseline", "val")
         elif args.command == "train":
@@ -165,16 +170,17 @@ def main(argv=None):
         elif args.command == "test":
             print(f"Comparison: {test_models(config)}")
         elif args.command == "compare":
-            frozen_dataset(config["output"], config["classes"])
+            frozen_dataset(config["temporary"], config["classes"])
             print(f"Comparison: {comparison_report(root)}")
         else:
             print(f"Active classes: {', '.join(config['classes'])}")
             print(f"Raw photos: {config['input']}\nAnnotations: {config['annotations']}\nResults: {root}")
-            if (dataset_directory(config["output"], config["classes"]) / "data.yaml").is_file():
-                dataset, _ = frozen_dataset(config["output"], config["classes"])
+            if (dataset_directory(config["temporary"], config["classes"]) / "data.yaml").is_file():
+                dataset, _ = frozen_dataset(config["temporary"], config["classes"])
                 print(json.dumps(dataset_summary(dataset), indent=2))
             else:
                 print("No frozen dataset for this selection yet. Start with prepare, annotation, then split.")
+        write_output_index(config)
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as error:
         parser.exit(1, f"Error: {error}\nSee docs/simple_workflow.md for the next steps.\n")
     return 0

@@ -52,7 +52,7 @@ def confidence_value(text):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=Path("data/raw/next_batch"), help="One JPG/PNG or a folder.")
-    parser.add_argument("--output", type=Path, default=Path("data/output/packages"), help="Folder for results.")
+    parser.add_argument("--output", type=Path, default=Path("data/output/next_batch/parcel_inference"), help="Folder for results.")
     parser.add_argument("--confidence", type=confidence_value, default=0.05, help="Minimum score (default: 0.05).")
     parser.add_argument("--weights", type=Path, default=Path("models/yolov8s-worldv2.pt"))
     args = parser.parse_args(argv)

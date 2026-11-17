@@ -8,26 +8,28 @@ then train on your annotated data and compare the results.
 ```text
 data/
   raw/                         Original photographs, organised by batch
-  annotated/                   Clean working copies and bounding-box coordinates
-  output/                      Galleries, splits, model checkpoints and analysis
+  annotated/                   Pictures with reference boxes and coordinate JSON
+  output/                      Galleries, checkpoints, fixed split record and analysis
+tmp/                           Disposable caches, scratch work and retired copies
 ```
 
 The current 100-image batch is `next_batch`. The earlier 23-photo collection is
-`real_photos`. Earlier reports and examples are under `data/output/archive/`.
+`real_photos`. Earlier reports, retired projects and annotation history are in `tmp/archive/`.
 
 For the current batch:
 
 - Originals: `data/raw/next_batch/`
-- Clean annotated images: `data/annotated/next_batch/images/`
-- YOLO coordinate files: `data/annotated/next_batch/labels/`
-- Editable coordinates: `data/annotated/next_batch/annotations.manual.json`
-- Annotation gallery: `data/output/next_batch/annotation_review/index.html`
-- Generated training datasets: `data/output/next_batch/datasets/`
+- Pictures with reference boxes: directly in `data/annotated/next_batch/`
+- The only coordinate file: `data/annotated/next_batch/annotations.json`
+- Annotation gallery: `tmp/next_batch/annotation_review/index.html`
+- Generated training datasets: `tmp/next_batch/datasets/`
 - Training and analysis results: `data/output/next_batch/experiments/`
 
-An annotated image stays clean. Its matching `.txt` file describes the boxes;
-coloured previews are saved in the output gallery. Never train on the previews.
-`labels/` means annotations for **all classes**, not only shipping labels.
+Each annotated batch contains only photos and one `annotations.json` file.
+The pictures here show your reference boxes; the JSON holds their pixel coordinates
+and physical group IDs. Training always reads clean images from `raw/` and boxes
+from the JSON. It never reads the pictures with drawn boxes.
+The code generates YOLO `.txt` files under `tmp/<batch>/` when splitting.
 
 ## Run the workflow
 
@@ -42,7 +44,7 @@ See [the workflow guide](docs/simple_workflow.md) for grouping and evaluation.
 # NEW batches only: copy raw photos, then ask the assistant to annotate them.
 .venv/bin/python workflow.py prepare
 
-# After annotation: fill the annotated batch's groups.csv before splitting.
+# After annotation: fill physical group IDs in annotations.json before splitting.
 .venv/bin/python workflow.py split
 .venv/bin/python workflow.py baseline
 .venv/bin/python workflow.py train --dry-run
@@ -67,9 +69,14 @@ selects checkpoints and confidence thresholds. Test data stays held back until
 those choices are frozen. Reports include IoU, confusion matrices, precision,
 recall, F1, AP/mAP, CSV/JSON and a before/after comparison. No accuracy is calculated.
 
+Open `data/output/next_batch/index.html` for model experiment links.
+The annotation editor is in `tmp/next_batch/annotation_review/index.html`.
+`tmp/` contains disposable generated files. The fixed split record stays with
+the permanent results so training copies can be rebuilt after deleting `tmp/`.
+
 ## Review annotations
 
-Open `data/output/next_batch/annotation_review/index.html` in a browser. Select,
+Open `tmp/next_batch/annotation_review/index.html` in a browser. Select,
 move, resize, add or delete boxes, then export the JSON and ask the assistant to
 import it. Browser drafts do not update the YOLO files automatically.
 Regenerate the current gallery and coordinate exports with:
@@ -84,17 +91,16 @@ Start with [`src/simple_ml_example.py`](src/simple_ml_example.py) and its
 [short guide](docs/simple_ml_example.md). It shows one readable class for loading
 an image, finding objects and drawing boxes, plus explicit training/evaluation steps.
 
-## Code and notebooks
+## Code
 
 - `workflow.py`: commands in workflow order.
 - `workflow.yaml`: the settings you normally change.
-- `src/workflow_data.py`: clean copies, grouping and reproducible splits.
+- `src/workflow_data.py`: JSON coordinates, grouping and reproducible splits.
 - `src/workflow_models.py`: model inference.
 - `src/workflow_reports.py`: analysis and model comparison.
-- `barcode_detection.ipynb` and `package_detection.ipynb`: earlier inference
-  notebooks using `real_photos`. Select this project's `.venv/bin/python` as the
-  kernel. Generated image outputs stay in the local archive; committed notebooks
-  contain source cells only.
+
+Optional old notebooks and Docker setup have been moved to `tmp/optional/`.
+They are not required for this local project and can be removed.
 
 Lower-level commands are documented in [training_evaluation.md](docs/training_evaluation.md).
 
@@ -104,12 +110,11 @@ The local environment uses Python 3.12. For a fresh macOS environment:
 
 ```sh
 python3.12 -m venv .venv
-.venv/bin/python -m pip install -r requirements-local.txt
+.venv/bin/python -m pip install -r requirements.txt
 ```
 
 Model files are in `models/`; `workflow.yaml` names the weights to use. The
-workflow checks local weights and does not download them automatically. Docker
-has separate dependencies in `requirements.txt`; `compose.yaml` is optional.
+workflow checks local weights and does not download them automatically.
 
 ```sh
 .venv/bin/python -m pytest -q
