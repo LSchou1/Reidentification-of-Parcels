@@ -41,6 +41,9 @@ See [the workflow guide](docs/simple_workflow.md) for grouping and evaluation.
 # Show the current paths and dataset status.
 .venv/bin/python workflow.py status
 
+# Annotated batch: find all configured classes and open analysis before splitting.
+.venv/bin/python workflow.py inspect --confidence 0.05
+
 # NEW batches only: copy raw photos, then ask the assistant to annotate them.
 .venv/bin/python workflow.py prepare
 
@@ -54,8 +57,14 @@ See [the workflow guide](docs/simple_workflow.md) for grouping and evaluation.
 ```
 
 **The current batch is already prepared and annotated.** Its final annotations
-contain 485 parcels, 123 barcodes and 31 shipping labels. Start with grouping,
-then `split`; do not run `prepare` again for this batch.
+contain 485 parcels, 123 barcodes and 31 shipping labels. Run `inspect` now to get
+the pictures and per-class analysis in `data/output/next_batch/inference/index.html`.
+This is exploratory inference on the whole batch, not a held-out test. It uses
+`classes` from `workflow.yaml`, never trains, and does not change the later
+validation threshold. Predictions are cached, so a new inspection confidence
+can be analysed without running the models again. The 0.05 value is a low
+inspection threshold, not a recommendation for the final model.
+For training, start with grouping, then `split`; do not run `prepare` again.
 
 Keep every view of the same physical parcel in one group, including appearances
 in different recordings. Use `parcel_A|parcel_B` when a frame shows both. At least

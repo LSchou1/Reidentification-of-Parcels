@@ -91,6 +91,33 @@ def coordinate_boxes(record, names, filename):
     return boxes
 
 
+def inspection_samples(source, annotations, names):
+    """Read reviewed boxes directly, without creating or assuming a data split."""
+    source = Path(source).resolve()
+    coordinates = json.loads((Path(annotations) / "annotations.json").read_text())
+    images = sorted(p for p in source.rglob("*") if p.suffix.lower() in EXTENSIONS)
+    if not images:
+        raise ValueError(f"No photos in {source}.")
+    if set(coordinates) != {p.relative_to(source).as_posix() for p in images}:
+        raise ValueError("Raw photos and annotations.json must list the same images.")
+    samples = []
+    for path in images:
+        if not path.resolve().is_relative_to(source):
+            raise ValueError(f"Photo is outside the raw folder: {path}")
+        name = path.relative_to(source).as_posix()
+        pixels = cv2.imread(str(path))
+        if pixels is None:
+            raise ValueError(f"Unreadable photo: {path}")
+        height, width = pixels.shape[:2]
+        record = coordinates[name]
+        if (record.get("width"), record.get("height")) != (width, height):
+            raise ValueError(f"Annotation dimensions differ from the raw photo: {name}")
+        samples.append({"image": name, "path": path, "sha256": sha256(path),
+                        "width": width, "height": height,
+                        "annotations": coordinate_boxes(record, names, name)})
+    return samples
+
+
 def related_groups(records, rows):
     """Connect explicit IDs transitively, including photos showing several parcels.
 

@@ -14,6 +14,7 @@ data/
     annotations.json              # The ONLY coordinate file you edit
   output/next_batch/
     index.html                    # Links to this batch's model experiments
+    inference/index.html          # Whole-batch inference, metrics and pictures
     experiments/                  # One named folder per model experiment
     dataset_split.json            # Permanent split record, needed for reproducibility
 tmp/next_batch/                   # Editor, thumbnails and generated training copies
@@ -82,6 +83,28 @@ it never uses the pictures with drawn boxes. JSON keys name the raw files,
 while the matching reference preview uses the same stem with a `.jpg` suffix.
 
 ## 3. Keep related photographs together, then split
+
+You can inspect the annotated batch **before** filling groups or splitting:
+
+```sh
+.venv/bin/python workflow.py inspect --confidence 0.05
+```
+
+Open `data/output/next_batch/inference/index.html`. The same HTML contains
+predictions for every active class, per-class precision/recall/F1 and AP,
+IoU, confusion matrix, confidence curves and pictures showing correct, false
+and missed detections. CSV and JSON downloads are linked from that page.
+The low 0.05 threshold keeps weak proposals visible for this inspection;
+change it in the command to inspect another value. Saved predictions are reused.
+Without `--confidence`, the command uses the configured confidence.
+
+This uses clean raw photos and the final coordinate JSON. It performs no
+training or automatic threshold selection and does not modify the annotations,
+split or future validation settings. Its whole-batch results are exploratory;
+use the separate validation/test workflow below for the model comparison.
+Re-running inspection replaces that inspection report; named experiments remain
+separate. This command reads `workflow.yaml`, unlike the lower-level
+`src.detect_barcodes` command with separate flags.
 
 Fill each photo's `group` in `annotations.json`. Every view of the same physical
 parcel must stay in the same group, including views from different recordings.

@@ -272,6 +272,8 @@ def write_report(result, samples, output):
         for target in detail["annotations"]:
             x1, y1, x2, y2 = map(round, target["xyxy"])
             cv2.rectangle(image, (x1, y1), (x2, y2), (255, 150, 0), 3)
+            cv2.putText(image, f"ref {target['class']}", (x1, min(image.shape[0] - 5, y1 + 22)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 150, 0), 2)
         false = set(detail["false_predictions"])
         for i, prediction in enumerate(detail["predictions"]):
             x1, y1, x2, y2 = map(round, prediction["xyxy"])
@@ -290,33 +292,51 @@ def write_report(result, samples, output):
                              for match in detail["match_details"])
         match_table = ('<table><tr><th>Fund</th><th>Reference</th><th>Klasse</th><th>Confidence</th><th>IoU</th></tr>'
                        + match_rows + '</table>') if match_rows else '<p>Ingen korrekte match ved de valgte grænser.</p>'
+        class_counts = ' · '.join(
+            f'{html.escape(name)}: {sum(p["class"] == name for p in detail["predictions"])} fund / '
+            f'{sum(a["class"] == name for a in detail["annotations"])} reference'
+            for name in labels[:-1])
         gallery.append(f'<article><p>{html.escape(sample["image"])} · '
                        f'{len(detail["false_predictions"])} falske · {len(detail["missed_annotations"])} oversete</p>'
-                       f'<a href="{name}"><img loading="lazy" src="{name}"></a>{match_table}</article>')
+                       f'<p>{class_counts}</p><a href="{name}"><img loading="lazy" src="{name}" '
+                       f'alt="Reference og modelbokse på {html.escape(sample["image"], quote=True)}"></a>{match_table}</article>')
     rows = []
     for name, values in {"Samlet": result["overall"], **result["per_class"]}.items():
         overlap = result["iou_summary"]["overall"] if name == "Samlet" else result["iou_summary"]["per_class"][name]
         mean_iou = "—" if overlap["mean"] is None else f'{overlap["mean"]:.3f}'
-        rows.append(f'<tr><td>{html.escape(name)}</td>' + ''.join(
+        ap = {"ap50": result["map50"], "ap50_95": result["map50_95"]} if name == "Samlet" else result["average_precision"][name]
+        ap_cells = ''.join(f'<td>{ap[key]:.3f}</td>' if ap[key] is not None else '<td>—</td>'
+                           for key in ("ap50", "ap50_95"))
+        rows.append(f'<tr><td>{html.escape(name)}</td><td>{values["tp"] + values["fn"]}</td>'
+                    f'<td>{values["tp"] + values["fp"]}</td>' + ''.join(
             f'<td>{values[key]:.3f}</td>' if key in ("precision", "recall", "f1") else f'<td>{values[key]}</td>'
-            for key in ("tp", "fp", "fn", "precision", "recall", "f1")) + f'<td>{mean_iou}</td></tr>')
+            for key in ("tp", "fp", "fn", "precision", "recall", "f1")) + f'<td>{mean_iou}</td>{ap_cells}</tr>')
     ap_text = "Ikke defineret" if result["map50"] is None else f"mAP50 {result['map50']:.3f} · mAP50–95 {result['map50_95']:.3f}"
     demonstration = ('<p><strong>Syntetisk funktionstest. Tallene dokumenterer ikke kvalitet på rigtige transportbåndsdata.</strong></p>'
                      if result.get("purpose") == "synthetic_functional_test_only" else '')
+    if result.get("purpose") == "annotated_batch_inspection":
+        demonstration = ('<p class="notice"><strong>Indledende analyse af hele det annoterede batch.</strong> '
+                         'Fortrænede modeller; ingen træning. Billederne er endnu ikke opdelt i train/val/test. '
+                         'Disse tal er derfor ikke en endelig testmåling. Confidence er fast valgt til denne visning.</p>')
+    title = "Evaluering: " + ", ".join(labels[:-1])
     page = ('<!doctype html><html lang="da"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-            '<title>Evaluering af stregkoder og labels</title><style>body{font:16px system-ui;max-width:1150px;margin:30px auto;padding:0 20px;color:#172433}'
+            f'<title>{html.escape(title)}</title><style>body{{font:16px system-ui;max-width:1250px;margin:30px auto;padding:0 20px;color:#172433}}'
             'table{border-collapse:collapse}td,th{padding:10px;border-bottom:1px solid #ddd}img{max-width:100%}'
-            '.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}article{border:1px solid #ddd;padding:12px}</style>'
-            '<h1>Evaluering af stregkoder og labels</h1>' + demonstration
+            '.table-scroll{overflow-x:auto}.notice{padding:16px;background:#fff4d6;border-left:4px solid #a96b00}'
+            '.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px}article{border:1px solid #ddd;padding:12px;overflow-wrap:anywhere;overflow-x:auto}</style>'
+            f'<h1>{html.escape(title)}</h1>' + demonstration
             + '<p>Confidence er modellens score. Kvaliteten nedenfor er målt mod gennemgåede annotationer.</p>'
+            f'<p>{len(samples)} billeder · Aktive klasser: {html.escape(", ".join(labels[:-1]))}.</p>'
             f'<p>Datasplit: {html.escape(result.get("split", "ukendt"))}. {ap_text}.</p>'
             f'<p>Confidencegrænse: {result["settings"]["confidence"]:.6g} · IoU-grænse: {result["settings"]["iou"]:.2f}.</p>'
-            '<table><tr><th>Klasse</th><th>TP</th><th>FP</th><th>FN</th><th>Precision</th><th>Recall</th><th>F1</th><th>Gns. IoU (korrekte match)</th></tr>'
-            + ''.join(rows) + '</table><p>IoU = overlapareal / samlet areal (intersection / union). '
+            '<div class="table-scroll"><table><tr><th>Klasse</th><th>Reference</th><th>Fund</th><th>TP</th><th>FP</th><th>FN</th><th>Precision</th><th>Recall</th><th>F1</th><th>Gns. IoU (korrekte match)</th><th>AP50</th><th>AP50–95</th></tr>'
+            + ''.join(rows) + '</table></div><p>IoU = overlapareal / samlet areal (intersection / union). '
             'Precision = TP / (TP + FP). Recall = TP / (TP + FN). '
             'Gennemsnitlig IoU gælder kun korrekt matchede bokse; uden match vises —. '
             'Læs derfor altid IoU sammen med recall og antallet af match.</p>'
-            '<img src="confusion_matrix.png"><img src="iou_distribution.png"><img src="confidence_analysis.png">'
+            '<img src="confusion_matrix.png" alt="Confusion matrix for alle aktive klasser">'
+            '<img src="iou_distribution.png" alt="Fordeling af IoU for korrekte match">'
+            '<img src="confidence_analysis.png" alt="Precision, recall og F1 ved forskellige confidencegrænser">'
             '<p>Matrix: faktisk klasse på rækkerne, forudsagt klasse i kolonnerne. Background-kolonnen viser oversete objekter; '
             'background-rækken viser falske fund. Der beregnes ingen TN eller almindelig accuracy.</p><ul>'
             + ''.join(f'<li>{html.escape(note)}</li>' for note in result["notes"])

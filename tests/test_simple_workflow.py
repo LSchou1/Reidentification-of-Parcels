@@ -13,7 +13,7 @@ import yaml
 
 import workflow
 from src.barcode_dataset import label_path, read_annotations
-from src.workflow_data import dataset_directory, frozen_dataset, prepare_photos, related_groups, save_json, split_photos
+from src.workflow_data import dataset_directory, frozen_dataset, inspection_samples, prepare_photos, related_groups, save_json, split_photos
 import src.workflow_reports as reports
 
 
@@ -143,6 +143,72 @@ def test_choose_confidence_uses_all_scores_and_can_keep_a_simple_tied_value():
     assert chosen == 0.35
     assert 0.3142 in [row["confidence"] for row in rows]
     assert max(row["f1"] for row in rows) == 1
+
+
+def test_unsplit_inspection_html_includes_all_classes_and_reuses_predictions(batch, tmp_path, monkeypatch):
+    source, project, temporary, output = batch
+    coordinates_path = project / "annotations.json"
+    coordinates = json.loads(coordinates_path.read_text())
+    for record in coordinates.values():
+        record["group"] = ""  # Inspection must not require or invent split groups.
+    save_json(coordinates_path, coordinates)
+    original = coordinates_path.read_bytes()
+    config = configuration(tmp_path, project, temporary, output)
+    config["input"] = str(source)
+    config_path = tmp_path / "workflow.yaml"
+    config_path.write_text(yaml.safe_dump(config))
+    calls = []
+
+    def predict(samples, names, settings, kind):
+        calls.append(len(samples))
+        assert names == CLASSES and kind == "baseline"
+        assert all(s["path"].is_relative_to(source) for s in samples)
+        return {"model": {"kind": kind}, "settings": {}, "images": [
+            {**{key: s[key] for key in ("image", "sha256", "width", "height")},
+             "detections": [{**a, "confidence": {"barcode": 0.9, "label": 0.04, "parcel": 0.08}[a["class"]]}
+                            for a in s["annotations"]]} for s in samples]}
+
+    monkeypatch.setattr(reports, "predict_boxes", predict)
+    assert workflow.main(["--config", str(config_path), "inspect", "--confidence", "0.05"]) == 0
+    report = json.loads((output / "inference/evaluation.json").read_text())
+    assert report["purpose"] == "annotated_batch_inspection"
+    assert report["settings"]["matrix_labels"] == CLASSES + ["background"]
+    assert report["per_class"]["parcel"]["tp"] == 20
+    assert report["per_class"]["label"]["fn"] == 20
+    assert report["iou_summary"]["per_class"]["parcel"]["mean"] == 1.0
+    page = (output / "inference/index.html").read_text()
+    assert 'Evaluering: barcode, label, parcel' in page
+    assert 'ikke en endelig testmåling' in page
+    assert 'parcel: 1 fund / 1 reference' in page
+    assert all(f'href="{name}"' in page for name in ("metrics.csv", "detections.csv", "predictions.json"))
+    assert all((output / "inference" / name).is_file() for name in (
+        "confusion_matrix.png", "confidence_analysis.png", "iou_distribution.png"))
+    assert 'inference/index.html' in (output / "index.html").read_text()
+    assert workflow.main(["--config", str(config_path), "inspect", "--confidence", "0.1"]) == 0
+    report = json.loads((output / "inference/evaluation.json").read_text())
+    assert calls == [20]
+    assert report["per_class"]["parcel"]["tp"] == 0
+    assert report["per_class"]["parcel"]["fn"] == 20
+    assert coordinates_path.read_bytes() == original
+    assert yaml.safe_load(config_path.read_text())["confidence"] == 0.35
+    assert not (output / "dataset_split.json").exists()
+    assert not (output / "experiments").exists()
+    assert not dataset_directory(temporary, CLASSES).exists()
+
+
+def test_inspection_rejects_unreviewed_and_incomplete_annotation_sets(batch):
+    source, project, _, _ = batch
+    path = project / "annotations.json"
+    coordinates = json.loads(path.read_text())
+    first = next(iter(coordinates))
+    coordinates[first]["reviewed"] = False
+    save_json(path, coordinates)
+    with pytest.raises(ValueError, match="annotation review"):
+        inspection_samples(source, project, CLASSES)
+    coordinates.pop(first)
+    save_json(path, coordinates)
+    with pytest.raises(ValueError, match="same images"):
+        inspection_samples(source, project, CLASSES)
 
 
 def test_full_lifecycle_freezes_val_confidence_and_rejects_stale_comparisons(batch, tmp_path, monkeypatch):

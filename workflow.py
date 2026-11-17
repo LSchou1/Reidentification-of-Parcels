@@ -18,7 +18,7 @@ from src.setup_barcode_model import sha256
 from src.train_barcodes import run_training
 from src.workflow_data import dataset_directory, frozen_dataset, group_counts, prepare_photos, save_json, split_photos
 from src.workflow_models import model_files
-from src.workflow_reports import analysis_request, comparison_report, run_analysis, write_output_index
+from src.workflow_reports import analysis_request, comparison_report, inspect_batch, run_analysis, write_output_index
 
 
 MASTER_CLASSES = ["barcode", "label", "parcel"]
@@ -145,6 +145,8 @@ def main(argv=None):
         ("status", "Show active classes, dataset and result locations."),
     ]:
         commands.add_parser(name, help=help_text)
+    inspection = commands.add_parser("inspect", help="Pretrained detection and HTML analysis of the annotated batch; no split or training.")
+    inspection.add_argument("--confidence", type=float, help="Fixed confidence for this inspection only; defaults to workflow.yaml.")
     training = commands.add_parser("train", help="Explicit supervised fine-tuning; never runs during inference.")
     training.add_argument("--dry-run", action="store_true", help="Check the training recipe without loading/training a model.")
     args = parser.parse_args(argv)
@@ -163,6 +165,8 @@ def main(argv=None):
             print(json.dumps(split_photos(config["input"], config["annotations"], config["temporary"], config["output"], config["split"], config["seed"], config["classes"]), indent=2))
         elif args.command == "baseline":
             run_analysis(config, root, "baseline", "val")
+        elif args.command == "inspect":
+            inspect_batch(config, args.confidence)
         elif args.command == "train":
             train(config, args.dry_run)
         elif args.command == "validate":

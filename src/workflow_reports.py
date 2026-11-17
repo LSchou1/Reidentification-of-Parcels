@@ -9,7 +9,7 @@ from pathlib import Path
 from src.barcode_dataset import dataset_summary, label_path
 from src.evaluate_barcodes import evaluate, join_predictions, score_at, write_report
 from src.setup_barcode_model import sha256
-from src.workflow_data import frozen_dataset, save_json
+from src.workflow_data import frozen_dataset, inspection_samples, save_json
 from src.workflow_models import model_files, predict_boxes
 
 
@@ -19,6 +19,8 @@ def write_output_index(config):
     if not output.exists():
         return
     links = []
+    if (output / "inference/index.html").is_file():
+        links.append(("Pretrained inference and annotation analysis", "inference/index.html"))
     for run in sorted((output / "experiments").glob("*/*")):
         if not run.is_dir():
             continue
@@ -119,6 +121,54 @@ def finish_report(result, output):
         downloads = '<p><a href="metrics.csv">Metrics CSV</a> · <a href="detections.csv">Detections CSV</a> · <a href="predictions.json">Raw predictions</a> · <a href="associations.json">Geometric associations</a></p>'
         path.write_text(page.replace("</h1>", "</h1>" + downloads, 1), encoding="utf-8")
     save_json(output / "complete.json", {"evaluation_sha256": sha256(output / "evaluation.json")})
+
+
+def inspect_batch(config, confidence=None):
+    """Show all configured classes and their measured quality before splitting.
+
+    This is an exploratory report, never the held-out test or validation report.
+    Cache model predictions so changing the display threshold needs no ML rerun.
+    """
+    names = config["classes"]
+    samples = inspection_samples(config["input"], config["annotations"], names)
+    threshold = config["confidence"] if confidence is None else confidence
+    if not config["prediction_floor"] <= threshold <= 1:
+        raise ValueError("Inspection confidence must be between prediction_floor and 1.")
+    output = Path(config["output"]) / "inference"
+    request = {"classes": names, "weights": model_files(config, "baseline"),
+               "settings": {key: config[key] for key in ("prediction_floor", "imgsz", "nms_iou", "device")},
+               "image_hashes": {s["image"]: s["sha256"] for s in samples}}
+    request_path, predictions_path = output / "request.json", output / "predictions.json"
+    if (request_path.is_file() and predictions_path.is_file()
+            and json.loads(request_path.read_text()) == request):
+        print("Reusing saved predictions; rebuilding the HTML analysis.", flush=True)
+        predictions = json.loads(predictions_path.read_text())
+    else:
+        predictions = predict_boxes(samples, names, config, "baseline")
+        save_json(predictions_path, predictions)
+        save_json(request_path, request)
+    joined = join_predictions(samples, predictions, names)
+    result = evaluate(joined, names, threshold, config["iou"], config["prediction_floor"])
+    result.update({"created_at": datetime.now(timezone.utc).isoformat(),
+                   "split": "unsplit annotated batch — exploratory inspection",
+                   "purpose": "annotated_batch_inspection", "model": predictions["model"],
+                   "dataset": {"names": names, "images": len(samples)},
+                   "image_hashes": request["image_hashes"],
+                   "annotations_sha256": sha256(Path(config["annotations"]) / "annotations.json"),
+                   "workflow": {"request": request, "threshold_source": "fixed inspection confidence"}})
+    result["notes"][0:0] = [
+        "Exploratory pretrained inference on the whole annotated batch. No training, checkpoint selection or automatic threshold selection was performed.",
+        "These are not held-out test results. Related photos may repeat the same parcels; the image count is not the number of independent examples.",
+        "Confidence is fixed for this inspection only. Future validation/test settings in workflow.yaml are unchanged.",
+        "All active classes are evaluated, including missed parcels. Predictions are compared with the final reviewed JSON, using clean raw photos.",
+        "This report evaluates bounding boxes. It does not decode barcode payloads.",
+    ]
+    if predictions["settings"].get("cap_reached_images"):
+        result["notes"].append("Some images reached the 300-box limit per model. This can limit measured recall and AP at low confidence.")
+    write_report(result, joined, output)
+    finish_report(result, output)
+    print(f"Saved {output / 'index.html'}", flush=True)
+    return result
 
 
 def run_analysis(config, run_root, kind, split, trained_weights=None):
