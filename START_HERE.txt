@@ -44,16 +44,22 @@ If the gallery is missing, regenerate it for the selected batches:
 
 .venv/bin/python -m src.export_annotation_gallery
 
-5. TRAIN AND EVALUATE AFTER GROUPING IS FINISHED
+5. TRAINING: NOT READY FOR THE CURRENT DATA YET
 
-The 100 next_batch pictures are annotated, but their group fields are blank.
-Fill physical parcel IDs in annotations.json before splitting. Every view of
-the same parcel must stay together. A frame with parcels A and B uses A|B.
-The splitter needs at least three independent groups for train/val/test.
+The 100 next_batch pictures now have group: collection_20261113.
+Both recordings contain repeated parcels, so they are kept together as one
+conservative collection. Grouping is saved; the remaining issue is that the
+splitter needs at least three independent groups for train/val/test.
 The older real_photos images currently share one conservative group;
 that batch also needs enough independent groups before it can be split.
 
-Run ONE command at a time and let it finish:
+Do not run the commands below until enough independent groups are available.
+Keep this collection together for training and collect different physical
+parcels for validation and final test, with reference boxes for all three classes.
+You do not need 100 new photos for every training run: keep the same fixed
+split for later experiments. All commands below stop until a valid split exists.
+
+AFTER enough independent groups are available, run ONE command at a time:
 
 .venv/bin/python workflow.py split
 .venv/bin/python workflow.py baseline
